@@ -84,6 +84,68 @@ def q_geral_daily():
         ORDER BY 1, 2
     """)
 
+
+def q_logistica_daily():
+    """Logistica por tipo por seller por dia - ultimos 90 dias."""
+    ff = "', '".join(FF_TYPES)
+    xd = "', '".join(XD_TYPES)
+    ss = "', '".join(SS_TYPES)
+    return run(f"""
+        SELECT
+            CAST(ORD_CLOSED_DT AS STRING)                                            AS dia,
+            CUS_CUST_ID_SEL                                                          AS cust_id,
+            ROUND(SUM(GMV_LC),2)                                                     AS gmv_total,
+            ROUND(SUM(CASE WHEN LOGISTIC_TYPE IN ('{ff}') THEN GMV_LC ELSE 0 END),2) AS gmv_ff,
+            ROUND(SUM(CASE WHEN LOGISTIC_TYPE IN ('{xd}') THEN GMV_LC ELSE 0 END),2) AS gmv_xd,
+            ROUND(SUM(CASE WHEN LOGISTIC_TYPE IN ('{ss}') THEN GMV_LC ELSE 0 END),2) AS gmv_ss
+        FROM {TABLE}
+        WHERE CUS_CUST_ID_SEL IN ({IDS_STR})
+          AND GMV_FLG = TRUE
+          AND ORD_CLOSED_DT >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
+          AND ORD_CLOSED_DT < CURRENT_DATE()
+        GROUP BY 1, 2
+        ORDER BY 1, 2
+    """)
+
+
+def q_ads_daily():
+    """ADS por seller por dia - ultimos 90 dias - BT_ADS_PADS_METRICS_DAILY."""
+    return run(f"""
+        SELECT
+            CAST(EVENT_LOCAL_DT AS STRING)         AS dia,
+            SELLER_ID                              AS cust_id,
+            ROUND(SUM(ADS_COST_AMT_LC),2)          AS ads_invest,
+            ROUND(SUM(TOUCHPOINT_GMV_LC),2)        AS gmv_ads,
+            SUM(CLICKS_BILLED_QTY)                 AS clicks
+        FROM `meli-bi-data.WHOWNER.BT_ADS_PADS_METRICS_DAILY`
+        WHERE SELLER_ID IN ({IDS_STR})
+          AND SIT_SITE_ID = 'MLB'
+          AND EVENT_LOCAL_DT >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
+          AND EVENT_LOCAL_DT < CURRENT_DATE()
+        GROUP BY 1, 2
+        ORDER BY 1, 2
+    """)
+
+
+def q_investimentos_daily():
+    """Investimentos por seller por dia - ultimos 90 dias."""
+    return run(f"""
+        SELECT
+            CAST(ORD_CLOSED_DT AS STRING)          AS dia,
+            CUS_CUST_ID_SEL                        AS cust_id,
+            ROUND(SUM(CPN_AMOUNT_LC),2)            AS cupons,
+            ROUND(SUM(REBATES_MANUAIS_LC),2)       AS rebate_pre,
+            ROUND(SUM(CP_INVESTMENTS_LC),2)        AS rebate_outras,
+            ROUND(SUM(TOTAL_INVESTMENTS_LC),2)     AS total_invest
+        FROM {TABLE}
+        WHERE CUS_CUST_ID_SEL IN ({IDS_STR})
+          AND GMV_FLG = TRUE
+          AND ORD_CLOSED_DT >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
+          AND ORD_CLOSED_DT < CURRENT_DATE()
+        GROUP BY 1, 2
+        ORDER BY 1, 2
+    """)
+
 
 def q_logistica_monthly():
     """Logística por tipo por seller por mês."""
@@ -202,11 +264,17 @@ def build_dataset() -> dict:
     print("  → Geral diário...")
     geral_d  = q_geral_daily()
     print("  → Logística...")
-    log_m    = q_logistica_monthly()
+    log_m    = q_logistica_monthly()
+    print("  -> Logistica diaria...")
+    log_d    = q_logistica_daily()
     print("  → ADS...")
-    ads_m    = q_ads_monthly()
+    ads_m    = q_ads_monthly()
+    print("  -> ADS diario...")
+    ads_d    = q_ads_daily()
     print("  → Investimentos...")
-    inv_m    = q_investimentos_monthly()
+    inv_m    = q_investimentos_monthly()
+    print("  -> Investimentos diario...")
+    inv_d    = q_investimentos_daily()
     print("  → BuyBox...")
     bb_m     = q_buybox_monthly()
     print("  → Catálogo top itens...")
@@ -233,10 +301,13 @@ def build_dataset() -> dict:
         "updated_at": datetime.now().strftime("%d/%m/%Y %H:%M"),
         "sellers":    sellers_meta,
         "geral_monthly":       clean_rows(geral_m),
-        "geral_daily":         clean_rows(geral_d),
-        "logistica_monthly":   clean_rows(log_m),
-        "ads_monthly":         clean_rows(ads_m),
-        "investimentos_monthly": clean_rows(inv_m),
+        "geral_daily":         clean_rows(geral_d),
+        "logistica_monthly":   clean_rows(log_m),
+        "logistica_daily":     clean_rows(log_d),
+        "ads_monthly":         clean_rows(ads_m),
+        "ads_daily":           clean_rows(ads_d),
+        "investimentos_monthly": clean_rows(inv_m),
+        "investimentos_daily": clean_rows(inv_d),
         "buybox_monthly":      clean_rows(bb_m),
         "catalogo_items":      clean_rows(cat),
     }
@@ -495,8 +566,10 @@ const fmtDate=d=>d.toISOString().slice(0,10);
 const fmtMonth=(y,m)=>`${y}-${String(m+1).padStart(2,'0')}`;
 const addDays=(d,n)=>{const r=new Date(d);r.setDate(r.getDate()+n);return r;};
 
-function getPeriodConfig(){
-  const now=new Date(),yr=now.getFullYear(),mo=now.getMonth(),p=state.period;
+function getPeriodConfig(){
+  var now=new Date(),yr=now.getFullYear(),mo=now.getMonth(),p=state.period;
+  var fD=function(d){return d.toISOString().slice(0,10);};
+
   if(p==='custom'&&state.customStart){
     var s=state.customStart,e=state.customEnd||state.customStart;
     var sD=new Date(s+'T00:00:00'),eD=new Date(e+'T00:00:00');
@@ -508,41 +581,51 @@ function getPeriodConfig(){
     var prevYoY=currM.map(function(m){return fmtMonth(parseInt(m.slice(0,4))-1,parseInt(m.slice(5))-1);});
     var lbl=currM.length===1?currM[0]:(currM[0]+' a '+currM[currM.length-1]);
     return {type:'custom',gran:'monthly',curr:currM,prevMoM:prevMoM,prevYoY:prevYoY,
-      label:lbl,showD1:true,showD2:true,d1Label:'MoM',d2Label:'YoY'};
+      label:lbl,showD1:true,showD2:true,d1Label:'MoM',d2Label:'YoY',
+      chartGran:'monthly',chartMonths:currM};
   }
-  if(p==='day'){
-    const d1=fmtDate(addDays(now,-1)),d2=fmtDate(addDays(now,-2));
-    return {type:'day',gran:'daily',curr:[d1,d1],prev:[d2,d2],label:`D-1 (${d1})`,prevLabel:'vs D-2',showD1:true,showD2:false};
-  }
-  if(p==='week'){
-    const dow=now.getDay(),toSat=dow===6?7:dow+1;
-    const wEnd=addDays(now,-toSat),wStart=addDays(wEnd,-6);
-    const pwEnd=addDays(wStart,-1),pwStart=addDays(pwEnd,-6);
-    const fw=d=>d.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'});
-    return {type:'week',gran:'daily',curr:[fmtDate(wStart),fmtDate(wEnd)],prev:[fmtDate(pwStart),fmtDate(pwEnd)],
-      label:`Sem. ${fw(wStart)}-${fw(wEnd)}`,prevLabel:'vs Sem. ant.',showD1:true,showD2:false};
-  }
-  if(p==='month'){
-    const cm=fmtMonth(yr,mo),pm=mo===0?[yr-1,11]:[yr,mo-1];
-    return {type:'month',gran:'monthly',curr:[cm],prevMoM:[fmtMonth(pm[0],pm[1])],prevYoY:[fmtMonth(yr-1,mo)],
-      label:cm,showD1:true,showD2:true,d1Label:'MoM',d2Label:'YoY'};
-  }
-  if(p==='quarter'){
-    const q=Math.floor(mo/3),curr=[];
-    for(let i=q*3;i<=mo;i++) curr.push(fmtMonth(yr,i));
-    const pqY=q===0?yr-1:yr,pqQ=q===0?3:q-1;
-    const pqMeses=curr.map((_,i)=>fmtMonth(pqY,pqQ*3+i));
-    const pyMeses=curr.map(m=>fmtMonth(yr-1,parseInt(m.slice(5))-1));
-    return {type:'quarter',gran:'monthly',curr,prevQoQ:pqMeses,prevYoY:pyMeses,
-      label:`Q${q+1} ${yr}`,showD1:true,showD2:true,d1Label:'QoQ',d2Label:'YoY'};
-  }
-  if(p==='year'){
-    const ytd=[],py=[];
-    for(let i=0;i<=mo;i++){ytd.push(fmtMonth(yr,i));py.push(fmtMonth(yr-1,i));}
-    return {type:'year',gran:'monthly',curr:ytd,prevYoY:py,label:`${yr} YTD`,showD1:false,showD2:true,d2Label:'YoY'};
-  }
-}
-
+  if(p==='day'){
+    var d1=fD(addDays(now,-1)),d2=fD(addDays(now,-2));
+    var chartS=fD(addDays(now,-30));
+    return {type:'day',gran:'daily',curr:[d1,d1],prev:[d2,d2],
+      label:'D-1 ('+d1+')',prevLabel:'vs D-2',showD1:true,showD2:false,
+      chartGran:'daily',chartStart:chartS,chartEnd:d1};
+  }
+  if(p==='week'){
+    var dow=now.getDay(),toSat=dow===6?7:dow+1;
+    var wEnd=addDays(now,-toSat),wStart=addDays(wEnd,-6);
+    var pwEnd=addDays(wStart,-1),pwStart=addDays(pwEnd,-6);
+    var fw=function(d){return d.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'});};
+    var wkS=fD(addDays(now,-28));
+    return {type:'week',gran:'daily',curr:[fD(wStart),fD(wEnd)],prev:[fD(pwStart),fD(pwEnd)],
+      label:'Sem. '+fw(wStart)+'-'+fw(wEnd),prevLabel:'vs Sem. ant.',showD1:true,showD2:false,
+      chartGran:'daily',chartStart:wkS,chartEnd:fD(addDays(now,-1))};
+  }
+  if(p==='month'){
+    var cm=fmtMonth(yr,mo),pm=mo===0?[yr-1,11]:[yr,mo-1];
+    var mStart=cm+'-01', mEnd=fD(addDays(now,-1));
+    return {type:'month',gran:'monthly',curr:[cm],prevMoM:[fmtMonth(pm[0],pm[1])],prevYoY:[fmtMonth(yr-1,mo)],
+      label:cm,showD1:true,showD2:true,d1Label:'MoM',d2Label:'YoY',
+      chartGran:'daily',chartStart:mStart,chartEnd:mEnd};
+  }
+  if(p==='quarter'){
+    var q=Math.floor(mo/3),curr=[];
+    for(var qi=q*3;qi<=mo;qi++) curr.push(fmtMonth(yr,qi));
+    var pqY=q===0?yr-1:yr,pqQ=q===0?3:q-1;
+    var pqMeses=curr.map(function(_,ii){return fmtMonth(pqY,pqQ*3+ii);});
+    var pyMeses=curr.map(function(m){return fmtMonth(yr-1,parseInt(m.slice(5))-1);});
+    return {type:'quarter',gran:'monthly',curr:curr,prevQoQ:pqMeses,prevYoY:pyMeses,
+      label:'Q'+(q+1)+' '+yr,showD1:true,showD2:true,d1Label:'QoQ',d2Label:'YoY',
+      chartGran:'monthly',chartMonths:curr};
+  }
+  if(p==='year'){
+    var ytd=[],py=[];
+    for(var yi=0;yi<=mo;yi++){ytd.push(fmtMonth(yr,yi));py.push(fmtMonth(yr-1,yi));}
+    return {type:'year',gran:'monthly',curr:ytd,prevYoY:py,
+      label:yr+' YTD',showD1:false,showD2:true,d2Label:'YoY',
+      chartGran:'monthly',chartMonths:ytd};
+  }
+}
 function setBadge(id,pc){const el=document.getElementById(id);if(el)el.textContent=pc.label||'';}
 
 function aggAllMonths(rows,fields){
@@ -573,6 +656,40 @@ function aggBySeller(rows,meses,fields){
   }); return out;
 }
 
+function aggDailyChart(rows,field,start,end){
+  var ids=sellerIds(state.seller),agg={};
+  rows.filter(function(r){return ids.includes(String(r.cust_id))&&r.dia>=start&&r.dia<=end;})
+    .forEach(function(r){agg[r.dia]=(agg[r.dia]||0)+(Number(r[field])||0);});
+  var labels=Object.keys(agg).sort();
+  return {labels:labels,data:labels.map(function(l){return agg[l];})};
+}
+function aggDailyChartMulti(rows,fields,start,end){
+  var ids=sellerIds(state.seller),agg={};
+  rows.filter(function(r){return ids.includes(String(r.cust_id))&&r.dia>=start&&r.dia<=end;})
+    .forEach(function(r){
+      if(!agg[r.dia]){agg[r.dia]={};fields.forEach(function(f){agg[r.dia][f]=0;});}
+      fields.forEach(function(f){agg[r.dia][f]+=(Number(r[f])||0);});
+    });
+  var labels=Object.keys(agg).sort();
+  return {labels:labels,byField:agg};
+}
+function aggDailyChart(rows,field,start,end){
+  var ids=sellerIds(state.seller),agg={};
+  rows.filter(function(r){return ids.includes(String(r.cust_id))&&r.dia>=start&&r.dia<=end;})
+    .forEach(function(r){agg[r.dia]=(agg[r.dia]||0)+(Number(r[field])||0);});
+  var labels=Object.keys(agg).sort();
+  return {labels:labels,data:labels.map(function(l){return agg[l];})};
+}
+function aggDailyChartMulti(rows,fields,start,end){
+  var ids=sellerIds(state.seller),agg={};
+  rows.filter(function(r){return ids.includes(String(r.cust_id))&&r.dia>=start&&r.dia<=end;})
+    .forEach(function(r){
+      if(!agg[r.dia]){agg[r.dia]={};fields.forEach(function(f){agg[r.dia][f]=0;});}
+      fields.forEach(function(f){agg[r.dia][f]+=(Number(r[f])||0);});
+    });
+  var labels=Object.keys(agg).sort();
+  return {labels:labels,byField:agg};
+}
 function computeKPI(pc,allM,field){
   let value,d1=null,d2=null;
   if(pc.gran==='daily'){
@@ -653,284 +770,247 @@ function makeChart(id,type,labels,datasets,opts={}){
   }});
 }
 
-function renderGeral(){
-  const pc=getPeriodConfig(),allM=aggAllMonths(RAW.geral_monthly,['gmv','si']);
-  setBadge('period-badge-geral',pc);
-  const gmv=computeKPI(pc,allM,'gmv'),si=computeKPI(pc,allM,'si');
-  const aspVal=si.value?gmv.value/si.value:0;
-
-  // Fix 5: ASP delta for all period types
-  let aspD1=null, aspD2=null;
-  if(pc.gran==='daily'){
-    if(pc.prev){
-      const gprev=sumDailyRange(pc.prev[0],pc.prev[1],'gmv');
-      const siprev=sumDailyRange(pc.prev[0],pc.prev[1],'si');
-      const aspPrev=siprev?gprev/siprev:null;
-      aspD1=(aspPrev&&aspVal)?((aspVal-aspPrev)/aspPrev)*100:null;
-    }
-  } else {
-    const aspPrev=pc.prevMoM?(()=>{const g=sumMeses(allM,pc.prevMoM,'gmv'),s=sumMeses(allM,pc.prevMoM,'si');return s?g/s:null;})()
-                 :pc.prevQoQ?(()=>{const g=sumMeses(allM,pc.prevQoQ,'gmv'),s=sumMeses(allM,pc.prevQoQ,'si');return s?g/s:null;})()
-                 :null;
-    const aspYY=pc.prevYoY?(()=>{const g=sumMeses(allM,pc.prevYoY,'gmv'),s=sumMeses(allM,pc.prevYoY,'si');return s?g/s:null;})():null;
-    aspD1=aspPrev?((aspVal-aspPrev)/aspPrev)*100:null;
-    aspD2=aspYY?((aspVal-aspYY)/aspYY)*100:null;
-  }
-
-  document.getElementById('kpi-geral').innerHTML=
-    kpiCard('GMV',fmtBRL(gmv.value),pc,gmv.d1,gmv.d2)+
-    kpiCard('SI (Unidades)',fmtNum(si.value),pc,si.d1,si.d2)+
-    kpiCard('ASP',fmtBRL(aspVal),pc,aspD1,aspD2);
-
-  // Fix 7: charts reflect selected filter
-  const gmvChart=getChartData(pc,allM,RAW.geral_daily,'gmv');
-  const siChart=getChartData(pc,allM,RAW.geral_daily,'si');
-  const aspLabels=gmvChart.labels;
-  const aspData=aspLabels.map((lbl,i)=>{
-    if(pc.gran==='daily'){
-      const ids=sellerIds(state.seller);
-      const dg=RAW.geral_daily.filter(r=>ids.includes(String(r.cust_id))&&r.dia===lbl).reduce((a,r)=>a+(Number(r.gmv)||0),0);
-      const ds=RAW.geral_daily.filter(r=>ids.includes(String(r.cust_id))&&r.dia===lbl).reduce((a,r)=>a+(Number(r.si)||0),0);
-      return ds?+(dg/ds).toFixed(2):null;
-    }
-    const g=allM[lbl]?.gmv||0,s=allM[lbl]?.si||0;
-    return s?+(g/s).toFixed(2):null;
-  });
-
-  makeChart('ch-gmv-mes','bar',gmvChart.labels,[{label:'GMV',data:gmvChart.data,backgroundColor:'#3483FA',borderRadius:4}],{yFmt:v=>'R$'+v.toLocaleString('pt-BR',{notation:'compact'})});
-
-  // Fix 7: MoM vs YoY chart always shows 12 months of context
-  const allM2=aggAllMonths(RAW.geral_monthly,['gmv','si']),allM2k=Object.keys(allM2).sort();
-  const last12k=allM2k.slice(-12);
-  const momArr=last12k.map(m=>{const p=allM2k[allM2k.indexOf(m)-1];if(!p)return null;const l=allM2[m]?.gmv||0,pv=allM2[p]?.gmv||0;return pv?+((l-pv)/pv*100).toFixed(1):null;});
-  const yoyArr=last12k.map(m=>{const yy=allM2k.find(x=>x.slice(0,4)===String(parseInt(m.slice(0,4))-1)&&x.slice(5)===m.slice(5));if(!yy)return null;const l=allM2[m]?.gmv||0,y=allM2[yy]?.gmv||0;return y?+((l-y)/y*100).toFixed(1):null;});
-  makeChart('ch-gmv-delta','line',last12k,[{label:'MoM%',data:momArr,borderColor:'#3483FA',backgroundColor:'#3483FA22',fill:true,tension:.3,pointRadius:3},{label:'YoY%',data:yoyArr,borderColor:'#E83C49',backgroundColor:'#E83C4922',fill:true,tension:.3,pointRadius:3}],{yFmt:v=>v?.toFixed(1)+'%'});
-
-  makeChart('ch-si-mes','bar',siChart.labels,[{label:'SI',data:siChart.data,backgroundColor:'#00A650',borderRadius:4}]);
-  makeChart('ch-asp-mes','line',aspLabels,[{label:'ASP',data:aspData,borderColor:'#FF7733',backgroundColor:'#FF773322',fill:true,tension:.3,pointRadius:3}],{yFmt:v=>'R$'+v?.toLocaleString('pt-BR',{maximumFractionDigits:0})});
-
-  // Seller table
-  const mT=pc.gran==='daily'?null:(pc.curr||[]);
-  const byS=pc.gran==='daily'?(()=>{
-    const ids=sellerIds(state.seller),out={};
-    RAW.geral_daily.filter(r=>ids.includes(String(r.cust_id))&&r.dia>=pc.curr[0]&&r.dia<=pc.curr[1]).forEach(r=>{
-      const k=String(r.cust_id);
-      if(!out[k]){out[k]={gmv:0,si:0};}
-      out[k].gmv+=(Number(r.gmv)||0);out[k].si+=(Number(r.si)||0);
-    }); return out;
-  })():aggBySeller(RAW.geral_monthly,mT,['gmv','si']);
-  const tG=Object.values(byS).reduce((a,v)=>a+(v.gmv||0),0);
-  let h=`<thead><tr><th>Seller</th><th>GMV</th><th>SI</th><th>ASP</th><th>Share GMV</th></tr></thead><tbody>`;
-  Object.entries(byS).sort((a,b)=>b[1].gmv-a[1].gmv).forEach(([cid,v])=>{
-    const asp=v.si?v.gmv/v.si:0,share=tG?(v.gmv/tG)*100:0;
-    h+=`<tr><td>${sellerLabel(cid)}</td><td>${fmtBRL(v.gmv)}</td><td>${fmtNum(v.si)}</td><td>${fmtBRL(asp)}</td><td><span class="badge">${fmtPct(share)}</span></td></tr>`;
-  });
-  document.getElementById('tbl-geral-sellers').innerHTML=h+'</tbody>';
-}
-
-function renderLogistica(){
-  const pc=getPeriodConfig(),allM=aggAllMonths(RAW.logistica_monthly,['gmv_total','gmv_ff','si_ff','gmv_xd','si_xd','gmv_ss','si_ss']);
-  setBadge('period-badge-log',pc);
-  // Fix 8: for daily, fall back to current month
-  const meses=pc.gran==='daily'?(pc.currM||[]):(pc.curr||[]);
-  const gmvT=sumMeses(allM,meses,'gmv_total')||1;
-  const ffV=sumMeses(allM,meses,'gmv_ff'),xdV=sumMeses(allM,meses,'gmv_xd'),ssV=sumMeses(allM,meses,'gmv_ss');
-  const ffP=(ffV/gmvT)*100,xdP=(xdV/gmvT)*100,ssP=(ssV/gmvT)*100;
-  const ffK=computeKPI(pc,allM,'gmv_ff');
-  document.getElementById('kpi-log').innerHTML=
-    `<div class="kpi-card"><div class="kpi-label">%FF (GMV)</div><div class="kpi-value">${fmtPct(ffP)}</div><div class="kpi-delta">${dHtml(ffK.d1,pc.d1Label||pc.prevLabel||'vs ant.')}</div></div>`+
-    `<div class="kpi-card"><div class="kpi-label">GMV FF</div><div class="kpi-value">${fmtBRL(ffK.value)}</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>`+
-    `<div class="kpi-card"><div class="kpi-label">%XD (GMV)</div><div class="kpi-value">${fmtPct(xdP)}</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>`+
-    `<div class="kpi-card"><div class="kpi-label">%SS (GMV)</div><div class="kpi-value">${fmtPct(ssP)}</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>`;
-  const cy=aggCurrentYear(RAW.logistica_monthly,['gmv_total','gmv_ff','si_ff','gmv_xd','si_xd','gmv_ss','si_ss']),cym=Object.keys(cy).sort();
-  makeChart('ch-log-mix','doughnut',['Fulfillment','Cross Docking','Self Service'],[{data:[ffP,xdP,ssP],backgroundColor:['#3483FA','#FFE600','#00A650'],borderWidth:0}],{extra:{plugins:{legend:{display:true,position:'bottom'}}}});
-  makeChart('ch-ff-mes','line',cym,[{label:'%FF',data:cym.map(m=>{const d=cy[m];return d?.gmv_total?+((d.gmv_ff/d.gmv_total)*100).toFixed(1):null;}),borderColor:'#3483FA',backgroundColor:'#3483FA22',fill:true,tension:.3,pointRadius:3}],{yFmt:v=>v?.toFixed(1)+'%'});
-  makeChart('ch-log-gmv','bar',cym,[{label:'FF',data:cym.map(m=>cy[m]?.gmv_ff||0),backgroundColor:'#3483FA',borderRadius:3},{label:'XD',data:cym.map(m=>cy[m]?.gmv_xd||0),backgroundColor:'#FFE600',borderRadius:3},{label:'SS',data:cym.map(m=>cy[m]?.gmv_ss||0),backgroundColor:'#00A650',borderRadius:3}],{extra:{scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,grid:{color:'#F0F0F0'}}}}});
-  makeChart('ch-log-si','bar',cym,[{label:'FF',data:cym.map(m=>cy[m]?.si_ff||0),backgroundColor:'#3483FA',borderRadius:3},{label:'XD',data:cym.map(m=>cy[m]?.si_xd||0),backgroundColor:'#FFE600',borderRadius:3},{label:'SS',data:cym.map(m=>cy[m]?.si_ss||0),backgroundColor:'#00A650',borderRadius:3}],{extra:{scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,grid:{color:'#F0F0F0'}}}}});
-  const bySL=aggBySeller(RAW.logistica_monthly,meses,['gmv_total','gmv_ff','gmv_xd','gmv_ss','si_total','si_ff']);
-  let h=`<thead><tr><th>Seller</th><th>GMV Total</th><th>GMV FF</th><th>%FF</th><th>GMV XD</th><th>%XD</th><th>GMV SS</th><th>%SS</th></tr></thead><tbody>`;
-  Object.entries(bySL).sort((a,b)=>b[1].gmv_total-a[1].gmv_total).forEach(([cid,v])=>{
-    const ff=v.gmv_total?(v.gmv_ff/v.gmv_total)*100:0,xd=v.gmv_total?(v.gmv_xd/v.gmv_total)*100:0,ss=v.gmv_total?(v.gmv_ss/v.gmv_total)*100:0;
-    h+=`<tr><td>${sellerLabel(cid)}</td><td>${fmtBRL(v.gmv_total)}</td><td>${fmtBRL(v.gmv_ff)}</td><td class="${ff>=50?'tag-pos':'tag-neg'}">${fmtPct(ff)}</td><td>${fmtBRL(v.gmv_xd)}</td><td>${fmtPct(xd)}</td><td>${fmtBRL(v.gmv_ss)}</td><td>${fmtPct(ss)}</td></tr>`;
-  });
-  document.getElementById('tbl-log-sellers').innerHTML=h+'</tbody>';
-}
-
+function renderGeral(){
+  var pc=getPeriodConfig(),allM=aggAllMonths(RAW.geral_monthly,['gmv','si']);
+  setBadge('period-badge-geral',pc);
+  var gmv=computeKPI(pc,allM,'gmv'),si=computeKPI(pc,allM,'si');
+  var aspVal=si.value?gmv.value/si.value:0;
+  var aspD1=null,aspD2=null;
+  if(pc.gran==='daily'){
+    if(pc.prev){var gprev=sumDailyRange(pc.prev[0],pc.prev[1],'gmv'),siprev=sumDailyRange(pc.prev[0],pc.prev[1],'si');var ap=siprev?gprev/siprev:null;aspD1=(ap&&aspVal)?((aspVal-ap)/ap)*100:null;}
+  } else {
+    var ap1=pc.prevMoM?(function(){var g=sumMeses(allM,pc.prevMoM,'gmv'),s=sumMeses(allM,pc.prevMoM,'si');return s?g/s:null;})():pc.prevQoQ?(function(){var g=sumMeses(allM,pc.prevQoQ,'gmv'),s=sumMeses(allM,pc.prevQoQ,'si');return s?g/s:null;})():null;
+    var ay1=pc.prevYoY?(function(){var g=sumMeses(allM,pc.prevYoY,'gmv'),s=sumMeses(allM,pc.prevYoY,'si');return s?g/s:null;})():null;
+    aspD1=ap1?((aspVal-ap1)/ap1)*100:null;aspD2=ay1?((aspVal-ay1)/ay1)*100:null;
+  }
+  document.getElementById('kpi-geral').innerHTML=
+    kpiCard('GMV',fmtBRL(gmv.value),pc,gmv.d1,gmv.d2)+
+    kpiCard('SI (Unidades)',fmtNum(si.value),pc,si.d1,si.d2)+
+    kpiCard('ASP',fmtBRL(aspVal),pc,aspD1,aspD2);
+
+  // CHARTS: daily for day/week/month, monthly for quarter/year
+  if(pc.chartGran==='daily'){
+    var s=pc.chartStart,e=pc.chartEnd;
+    var gmvC=aggDailyChart(RAW.geral_daily,'gmv',s,e);
+    var siC =aggDailyChart(RAW.geral_daily,'si',s,e);
+    makeChart('ch-gmv-mes','bar',gmvC.labels,[{label:'GMV',data:gmvC.data,backgroundColor:'#3483FA',borderRadius:3}],{yFmt:v=>'R$'+v.toLocaleString('pt-BR',{notation:'compact'})});
+    makeChart('ch-si-mes','bar',siC.labels,[{label:'SI',data:siC.data,backgroundColor:'#00A650',borderRadius:3}]);
+    var aspC=aggDailyChartMulti(RAW.geral_daily,['gmv','si'],s,e);
+    makeChart('ch-asp-mes','line',aspC.labels,[{label:'ASP',data:aspC.labels.map(function(d){var g=aspC.byField[d]?.gmv||0,si=aspC.byField[d]?.si||0;return si?+(g/si).toFixed(0):null;}),borderColor:'#FF7733',backgroundColor:'#FF773322',fill:true,tension:.3,pointRadius:2}],{yFmt:v=>'R$'+v?.toLocaleString('pt-BR',{maximumFractionDigits:0})});
+  } else {
+    var cM=pc.chartMonths||pc.curr;
+    makeChart('ch-gmv-mes','bar',cM,[{label:'GMV',data:cM.map(function(m){return allM[m]?.gmv||0;}),backgroundColor:'#3483FA',borderRadius:4}],{yFmt:v=>'R$'+v.toLocaleString('pt-BR',{notation:'compact'})});
+    makeChart('ch-si-mes','bar',cM,[{label:'SI',data:cM.map(function(m){return allM[m]?.si||0;}),backgroundColor:'#00A650',borderRadius:4}]);
+    makeChart('ch-asp-mes','line',cM,[{label:'ASP',data:cM.map(function(m){var g=allM[m]?.gmv||0,s=allM[m]?.si||0;return s?+(g/s).toFixed(0):null;}),borderColor:'#FF7733',backgroundColor:'#FF773322',fill:true,tension:.3,pointRadius:3}],{yFmt:v=>'R$'+v?.toLocaleString('pt-BR',{maximumFractionDigits:0})});
+  }
+
+  // Delta MoM/YoY chart: always last 12 months monthly
+  var allM2=aggAllMonths(RAW.geral_monthly,['gmv','si']),allM2k=Object.keys(allM2).sort();
+  var last12=allM2k.slice(-12);
+  var momArr=last12.map(function(m){var p=allM2k[allM2k.indexOf(m)-1];if(!p)return null;var l=allM2[m]?.gmv||0,pv=allM2[p]?.gmv||0;return pv?+((l-pv)/pv*100).toFixed(1):null;});
+  var yoyArr=last12.map(function(m){var yy=allM2k.find(function(x){return x.slice(0,4)===String(parseInt(m.slice(0,4))-1)&&x.slice(5)===m.slice(5);});if(!yy)return null;var l=allM2[m]?.gmv||0,y=allM2[yy]?.gmv||0;return y?+((l-y)/y*100).toFixed(1):null;});
+  makeChart('ch-gmv-delta','line',last12,[
+    {label:'MoM%',data:momArr,borderColor:'#3483FA',backgroundColor:'#3483FA22',fill:true,tension:.3,pointRadius:2},
+    {label:'YoY%',data:yoyArr,borderColor:'#E83C49',backgroundColor:'#E83C4922',fill:true,tension:.3,pointRadius:2}
+  ],{yFmt:v=>v?.toFixed(1)+'%'});
+
+  // Seller table
+  var mT=pc.gran==='daily'?null:(pc.curr||[]);
+  var byS=pc.gran==='daily'?(function(){
+    var ids=sellerIds(state.seller),out={};
+    RAW.geral_daily.filter(function(r){return ids.includes(String(r.cust_id))&&r.dia>=pc.curr[0]&&r.dia<=pc.curr[1];}).forEach(function(r){
+      var k=String(r.cust_id);if(!out[k]){out[k]={gmv:0,si:0};}
+      out[k].gmv+=(Number(r.gmv)||0);out[k].si+=(Number(r.si)||0);
+    });return out;
+  })():aggBySeller(RAW.geral_monthly,mT,['gmv','si']);
+  var tG=Object.values(byS).reduce(function(a,v){return a+(v.gmv||0);},0);
+  var h='<thead><tr><th>Seller</th><th>GMV</th><th>SI</th><th>ASP</th><th>Share GMV</th></tr></thead><tbody>';
+  Object.entries(byS).sort(function(a,b){return b[1].gmv-a[1].gmv;}).forEach(function([cid,v]){
+    var asp=v.si?v.gmv/v.si:0,share=tG?(v.gmv/tG)*100:0;
+    h+='<tr><td>'+sellerLabel(cid)+'</td><td>'+fmtBRL(v.gmv)+'</td><td>'+fmtNum(v.si)+'</td><td>'+fmtBRL(asp)+'</td><td><span class="badge">'+fmtPct(share)+'</span></td></tr>';
+  });
+  document.getElementById('tbl-geral-sellers').innerHTML=h+'</tbody>';
+}
+function renderLogistica(){
+  var pc=getPeriodConfig(),allM=aggAllMonths(RAW.logistica_monthly,['gmv_total','gmv_ff','si_ff','gmv_xd','si_xd','gmv_ss','si_ss']);
+  setBadge('period-badge-log',pc);
+  var meses=pc.gran==='daily'?(pc.currM||[]):(pc.curr||[]);
+  var gmvT=sumMeses(allM,meses,'gmv_total')||1;
+  var ffV=sumMeses(allM,meses,'gmv_ff'),xdV=sumMeses(allM,meses,'gmv_xd'),ssV=sumMeses(allM,meses,'gmv_ss');
+  var ffP=(ffV/gmvT)*100,xdP=(xdV/gmvT)*100,ssP=(ssV/gmvT)*100;
+  var ffK=computeKPI(pc,allM,'gmv_ff');
+  document.getElementById('kpi-log').innerHTML=
+    '<div class="kpi-card"><div class="kpi-label">%FF (GMV)</div><div class="kpi-value">'+fmtPct(ffP)+'</div><div class="kpi-delta">'+dHtml(ffK.d1,pc.d1Label||pc.prevLabel||'vs ant.')+'</div></div>'+
+    '<div class="kpi-card"><div class="kpi-label">GMV FF</div><div class="kpi-value">'+fmtBRL(ffK.value)+'</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>'+
+    '<div class="kpi-card"><div class="kpi-label">%XD (GMV)</div><div class="kpi-value">'+fmtPct(xdP)+'</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>'+
+    '<div class="kpi-card"><div class="kpi-label">%SS (GMV)</div><div class="kpi-value">'+fmtPct(ssP)+'</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>';
+
+  // CHARTS
+  var donut_data=[ffP,xdP,ssP];
+  makeChart('ch-log-mix','doughnut',['Fulfillment','Cross Docking','Self Service'],
+    [{data:donut_data,backgroundColor:['#3483FA','#FFE600','#00A650'],borderWidth:0}],
+    {extra:{plugins:{legend:{display:true,position:'bottom'}}}});
+
+  if(pc.chartGran==='daily'){
+    var s=pc.chartStart,e=pc.chartEnd;
+    var lc=aggDailyChartMulti(RAW.logistica_daily,['gmv_total','gmv_ff','gmv_xd','gmv_ss'],s,e);
+    var lbl=lc.labels;
+    makeChart('ch-ff-mes','line',lbl,[{label:'%FF',data:lbl.map(function(d){var t=lc.byField[d]?.gmv_total||0;return t?+((lc.byField[d]?.gmv_ff||0)/t*100).toFixed(1):null;}),borderColor:'#3483FA',backgroundColor:'#3483FA22',fill:true,tension:.3,pointRadius:2}],{yFmt:v=>v?.toFixed(1)+'%'});
+    makeChart('ch-log-gmv','bar',lbl,[
+      {label:'FF',data:lbl.map(function(d){return lc.byField[d]?.gmv_ff||0;}),backgroundColor:'#3483FA',borderRadius:2},
+      {label:'XD',data:lbl.map(function(d){return lc.byField[d]?.gmv_xd||0;}),backgroundColor:'#FFE600',borderRadius:2},
+      {label:'SS',data:lbl.map(function(d){return lc.byField[d]?.gmv_ss||0;}),backgroundColor:'#00A650',borderRadius:2}
+    ],{extra:{scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,grid:{color:'#F0F0F0'}}}}});
+    makeChart('ch-log-si','bar',lbl,[
+      {label:'Total SI',data:lbl.map(function(d){var t=lc.byField[d]?.gmv_total||0;return t?+(lc.byField[d]?.gmv_ff/t*100||0).toFixed(1):null;}),backgroundColor:'#3483FA',borderRadius:2}
+    ],{yFmt:v=>v?.toFixed(1)+'%'});
+  } else {
+    var cM=pc.chartMonths||pc.curr;
+    makeChart('ch-ff-mes','line',cM,[{label:'%FF',data:cM.map(function(m){var d=allM[m];return d?.gmv_total?+((d.gmv_ff/d.gmv_total)*100).toFixed(1):null;}),borderColor:'#3483FA',backgroundColor:'#3483FA22',fill:true,tension:.3,pointRadius:3}],{yFmt:v=>v?.toFixed(1)+'%'});
+    makeChart('ch-log-gmv','bar',cM,[
+      {label:'FF',data:cM.map(function(m){return allM[m]?.gmv_ff||0;}),backgroundColor:'#3483FA',borderRadius:3},
+      {label:'XD',data:cM.map(function(m){return allM[m]?.gmv_xd||0;}),backgroundColor:'#FFE600',borderRadius:3},
+      {label:'SS',data:cM.map(function(m){return allM[m]?.gmv_ss||0;}),backgroundColor:'#00A650',borderRadius:3}
+    ],{extra:{scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,grid:{color:'#F0F0F0'}}}}});
+    makeChart('ch-log-si','bar',cM,[
+      {label:'FF SI',data:cM.map(function(m){return allM[m]?.si_ff||0;}),backgroundColor:'#3483FA',borderRadius:3},
+      {label:'XD SI',data:cM.map(function(m){return allM[m]?.si_xd||0;}),backgroundColor:'#FFE600',borderRadius:3},
+      {label:'SS SI',data:cM.map(function(m){return allM[m]?.si_ss||0;}),backgroundColor:'#00A650',borderRadius:3}
+    ],{extra:{scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,grid:{color:'#F0F0F0'}}}}});
+  }
+
+  var bySL=aggBySeller(RAW.logistica_monthly,meses,['gmv_total','gmv_ff','gmv_xd','gmv_ss','si_total','si_ff']);
+  var h='<thead><tr><th>Seller</th><th>GMV Total</th><th>GMV FF</th><th>%FF</th><th>GMV XD</th><th>%XD</th><th>GMV SS</th><th>%SS</th></tr></thead><tbody>';
+  Object.entries(bySL).sort(function(a,b){return b[1].gmv_total-a[1].gmv_total;}).forEach(function([cid,v]){
+    var ff=v.gmv_total?(v.gmv_ff/v.gmv_total)*100:0,xd=v.gmv_total?(v.gmv_xd/v.gmv_total)*100:0,ss=v.gmv_total?(v.gmv_ss/v.gmv_total)*100:0;
+    h+='<tr><td>'+sellerLabel(cid)+'</td><td>'+fmtBRL(v.gmv_total)+'</td><td>'+fmtBRL(v.gmv_ff)+'</td><td class="'+(ff>=50?'tag-pos':'tag-neg')+'">'+fmtPct(ff)+'</td><td>'+fmtBRL(v.gmv_xd)+'</td><td>'+fmtPct(xd)+'</td><td>'+fmtBRL(v.gmv_ss)+'</td><td>'+fmtPct(ss)+'</td></tr>';
+  });
+  document.getElementById('tbl-log-sellers').innerHTML=h+'</tbody>';
+}
 function renderAds(){
-  const pc=getPeriodConfig();
+  var pc=getPeriodConfig();
   setBadge('period-badge-ads',pc);
-  const meses=pc.gran==='daily'?(pc.currM||[]):(pc.curr||[]);
+  var meses=pc.gran==='daily'?(pc.currM||[]):(pc.curr||[]);
+  var allAds=aggAllMonths(RAW.ads_monthly,['ads_invest','gmv_ads','clicks']);
+  var allGmv=aggAllMonths(RAW.geral_monthly,['gmv']);
+  var allAdsK=Object.keys(allAds).sort();
 
-  const allAds=aggAllMonths(RAW.ads_monthly,['ads_invest','gmv_ads','clicks']);
-  const allGmv=aggAllMonths(RAW.geral_monthly,['gmv']);
-  const allAdsK=Object.keys(allAds).sort();
+  var invV=sumMeses(allAds,meses,'ads_invest'),gmvAdsV=sumMeses(allAds,meses,'gmv_ads'),totalGmvV=sumMeses(allGmv,meses,'gmv');
+  var roas=invV?+(gmvAdsV/invV).toFixed(2):0,acos=gmvAdsV?+(invV/gmvAdsV*100).toFixed(2):0,adsgmv=totalGmvV?+(gmvAdsV/totalGmvV*100).toFixed(2):0;
+  var lastM=meses[meses.length-1]||'',prevMTR=allAdsK[allAdsK.indexOf(lastM)-1];
+  var takeRate=prevMTR&&allGmv[prevMTR]?.gmv?+(invV/allGmv[prevMTR].gmv*100).toFixed(2):null;
 
-  // Current period values
-  const invV    = sumMeses(allAds,meses,'ads_invest');
-  const gmvAdsV = sumMeses(allAds,meses,'gmv_ads');
-  const totalGmvV = sumMeses(allGmv,meses,'gmv');
-  const roas    = invV    ? +(gmvAdsV/invV).toFixed(2)          : 0;
-  const acos    = gmvAdsV ? +(invV/gmvAdsV*100).toFixed(2)      : 0;
-  const adsgmv  = totalGmvV ? +(gmvAdsV/totalGmvV*100).toFixed(2): 0;
-  const lastM   = meses[meses.length-1]||'';
-  const prevMTR = allAdsK[allAdsK.indexOf(lastM)-1];
-  const takeRate= prevMTR&&allGmv[prevMTR]?.gmv
-                  ? +(invV/allGmv[prevMTR].gmv*100).toFixed(2) : null;
-
-  // MoM comparison values (for derived %)
-  function calcMetrics(ms){
-    var inv=sumMeses(allAds,ms,'ads_invest'),g=sumMeses(allAds,ms,'gmv_ads'),tg=sumMeses(allGmv,ms,'gmv');
-    var lastMom=ms[ms.length-1]||'',prevTR=allAdsK[allAdsK.indexOf(lastMom)-1];
-    return {
-      roas:  inv  ? g/inv         : 0,
-      acos:  g    ? inv/g*100     : 0,
-      adsgmv:tg   ? g/tg*100      : 0,
-      takeRate: prevTR&&allGmv[prevTR]?.gmv ? inv/allGmv[prevTR].gmv*100 : null
-    };
-  }
-  var prevMoMMs  = pc.prevMoM  || (pc.prevQoQ||null);
-  var prevYoYMs  = pc.prevYoY  || null;
-  var momMetrics = prevMoMMs ? calcMetrics(prevMoMMs) : null;
-  var yoyMetrics = prevYoYMs ? calcMetrics(prevYoYMs) : null;
-
-  // Standard delta helpers
-  var invK = computeKPI(pc,allAds,'ads_invest');
-  var gmvAdsK = computeKPI(pc,allAds,'gmv_ads');
-
-  // pp delta helper (for %, lower = better for ACOS; higher = better for ROAS/ADS/GMV%)
-  function ppCard(label,value,fmtFn,cur,momM,yoyM,lowerBetter){
+  var invK=computeKPI(pc,allAds,'ads_invest'),gmvAdsK=computeKPI(pc,allAds,'gmv_ads');
+  function calcMetrics(ms){var inv=sumMeses(allAds,ms,'ads_invest'),g=sumMeses(allAds,ms,'gmv_ads'),tg=sumMeses(allGmv,ms,'gmv');var lm=ms[ms.length-1]||'',pt=allAdsK[allAdsK.indexOf(lm)-1];return{roas:inv?g/inv:0,acos:g?inv/g*100:0,adsgmv:tg?g/tg*100:0,takeRate:pt&&allGmv[pt]?.gmv?inv/allGmv[pt].gmv*100:null};}
+  var momM=pc.prevMoM||pc.prevQoQ||null,yoyM=pc.prevYoY||null;
+  var momMet=momM?calcMetrics(momM):null,yoyMet=yoyM?calcMetrics(yoyM):null;
+  function ppCard(label,value,fmtFn,mV,yV,lowerBetter){
     var dh='';
-    if(momM!=null){
-      var diff=+(cur-momM).toFixed(1);
-      var good=lowerBetter?(diff<0):(diff>0);
-      var cls=good?'dp':'dn',arr=diff>0?'\u25b2':'\u25bc';
-      dh+='<span class="'+cls+'">MoM: '+arr+Math.abs(diff).toFixed(1)+'pp</span>';
-    }
-    if(yoyM!=null){
-      var diff2=+(cur-yoyM).toFixed(1);
-      var good2=lowerBetter?(diff2<0):(diff2>0);
-      var cls2=good2?'dp':'dn',arr2=diff2>0?'\u25b2':'\u25bc';
-      dh+=' <span class="'+cls2+'">YoY: '+arr2+Math.abs(diff2).toFixed(1)+'pp</span>';
-    }
-    if(!dh) dh='<span class="dn0">\u2014</span>';
-    return '<div class="kpi-card"><div class="kpi-label">'+label+'</div>'
-          +'<div class="kpi-value">'+fmtFn(value)+'</div>'
-          +'<div class="kpi-delta">'+dh+'</div></div>';
+    if(mV!=null){var d=+(value-(mV||0)).toFixed(1),good=lowerBetter?d<0:d>0;dh+='<span class="'+(good?'dp':'dn')+'">MoM: '+(d>0?'\u25b2':'\u25bc')+Math.abs(d).toFixed(1)+'pp</span> ';}
+    if(yV!=null){var d2=+(value-(yV||0)).toFixed(1),good2=lowerBetter?d2<0:d2>0;dh+='<span class="'+(good2?'dp':'dn')+'">YoY: '+(d2>0?'\u25b2':'\u25bc')+Math.abs(d2).toFixed(1)+'pp</span>';}
+    if(!dh)dh='<span class="dn0">\u2014</span>';
+    return '<div class="kpi-card"><div class="kpi-label">'+label+'</div><div class="kpi-value">'+fmtFn(value)+'</div><div class="kpi-delta">'+dh+'</div></div>';
   }
-
-  // Standard % delta for ROAS
-  var roasMom = momMetrics ? (momMetrics.roas ? (roas-momMetrics.roas)/momMetrics.roas*100 : null) : null;
-  var roasYoy = yoyMetrics ? (yoyMetrics.roas ? (roas-yoyMetrics.roas)/yoyMetrics.roas*100 : null) : null;
-
   document.getElementById('kpi-ads').innerHTML=
     kpiCard('Investimento ADS',fmtBRL(invV),pc,invK.d1,invK.d2)+
     kpiCard('GMV via ADS',fmtBRL(gmvAdsV),pc,gmvAdsK.d1,gmvAdsK.d2)+
-    ppCard('ROAS',roas,fmtDec,roas,
-           momMetrics?momMetrics.roas:null, yoyMetrics?yoyMetrics.roas:null, false)+
-    ppCard('ACOS',acos,fmtPct,acos,
-           momMetrics?momMetrics.acos:null, yoyMetrics?yoyMetrics.acos:null, true)+
-    ppCard('ADS/GMV%',adsgmv,fmtPct,adsgmv,
-           momMetrics?momMetrics.adsgmv:null, yoyMetrics?yoyMetrics.adsgmv:null, false)+
-    ppCard('Take Rate ADS',takeRate,fmtPct,takeRate,
-           momMetrics?momMetrics.takeRate:null, yoyMetrics?yoyMetrics.takeRate:null, false);
+    ppCard('ROAS',roas,fmtDec,momMet?momMet.roas:null,yoyMet?yoyMet.roas:null,false)+
+    ppCard('ACOS',acos,fmtPct,momMet?momMet.acos:null,yoyMet?yoyMet.acos:null,true)+
+    ppCard('ADS/GMV%',adsgmv,fmtPct,momMet?momMet.adsgmv:null,yoyMet?yoyMet.adsgmv:null,false)+
+    ppCard('Take Rate ADS',takeRate,fmtPct,momMet?momMet.takeRate:null,yoyMet?yoyMet.takeRate:null,false);
 
-  // Charts: last 12 months available (regardless of period filter)
-  var chartM = allAdsK.slice(-12);
-  if(pc.type==='custom'&&meses.length) chartM=meses;
-
-  makeChart('ch-ads-invest','bar',chartM,
-    [{label:'Investimento ADS',data:chartM.map(m=>allAds[m]?.ads_invest||0),
-      backgroundColor:'#9B59B6',borderRadius:4}],
-    {yFmt:v=>'R$'+v.toLocaleString('pt-BR',{notation:'compact'})});
-
-  makeChart('ch-gmv-ads','bar',chartM,
-    [{label:'GMV via ADS',data:chartM.map(m=>allAds[m]?.gmv_ads||0),
-      backgroundColor:'#3483FA',borderRadius:4}],
-    {yFmt:v=>'R$'+v.toLocaleString('pt-BR',{notation:'compact'})});
-
-  makeChart('ch-roas','line',chartM,
-    [{label:'ROAS',data:chartM.map(m=>{
-        var i=allAds[m]?.ads_invest||0,g=allAds[m]?.gmv_ads||0;
-        return i?+(g/i).toFixed(2):null;
-      }),borderColor:'#1ABC9C',backgroundColor:'#1ABC9C22',fill:true,tension:.3,pointRadius:4}]);
-
-  makeChart('ch-ads-perc','line',chartM,[
-    {label:'ACOS%',data:chartM.map(m=>{
-        var i=allAds[m]?.ads_invest||0,g=allAds[m]?.gmv_ads||0;
-        return g?+(i/g*100).toFixed(2):null;
-      }),borderColor:'#E83C49',fill:false,tension:.3,pointRadius:4},
-    {label:'ADS/GMV%',data:chartM.map(m=>{
-        var g=allAds[m]?.gmv_ads||0,t=allGmv[m]?.gmv||0;
-        return t?+(g/t*100).toFixed(2):null;
-      }),borderColor:'#FF7733',fill:false,tension:.3,pointRadius:4}
-  ],{yFmt:v=>v?.toFixed(1)+'%'});
-
-  makeChart('ch-take-rate','line',chartM,
-    [{label:'Take Rate %',data:chartM.map(function(m,idx){
-        var prev=allAdsK[allAdsK.indexOf(m)-1];
-        var inv=allAds[m]?.ads_invest||0,gp=allGmv[prev]?.gmv||0;
-        return gp?+(inv/gp*100).toFixed(2):null;
-      }),borderColor:'#3483FA',backgroundColor:'#3483FA22',fill:true,tension:.3,pointRadius:4}
+  // CHARTS: daily for day/week/month, monthly for quarter/year/custom
+  if(pc.chartGran==='daily'){
+    var s=pc.chartStart,e=pc.chartEnd;
+    var invC=aggDailyChart(RAW.ads_daily,'ads_invest',s,e);
+    var gmvC=aggDailyChart(RAW.ads_daily,'gmv_ads',s,e);
+    makeChart('ch-ads-invest','bar',invC.labels,[{label:'Invest. ADS',data:invC.data,backgroundColor:'#9B59B6',borderRadius:3}],{yFmt:v=>'R$'+v.toLocaleString('pt-BR',{notation:'compact'})});
+    makeChart('ch-gmv-ads','bar',gmvC.labels,[{label:'GMV via ADS',data:gmvC.data,backgroundColor:'#3483FA',borderRadius:3}],{yFmt:v=>'R$'+v.toLocaleString('pt-BR',{notation:'compact'})});
+    var adsMC=aggDailyChartMulti(RAW.ads_daily,['ads_invest','gmv_ads'],s,e);
+    var glC=aggDailyChartMulti(RAW.geral_daily,['gmv'],s,e);
+    makeChart('ch-roas','line',adsMC.labels,[{label:'ROAS',data:adsMC.labels.map(function(d){var i=adsMC.byField[d]?.ads_invest||0,g=adsMC.byField[d]?.gmv_ads||0;return i?+(g/i).toFixed(2):null;}),borderColor:'#1ABC9C',backgroundColor:'#1ABC9C22',fill:true,tension:.3,pointRadius:2}]);
+    makeChart('ch-ads-perc','line',adsMC.labels,[
+      {label:'ACOS%',data:adsMC.labels.map(function(d){var i=adsMC.byField[d]?.ads_invest||0,g=adsMC.byField[d]?.gmv_ads||0;return g?+(i/g*100).toFixed(2):null;}),borderColor:'#E83C49',fill:false,tension:.3,pointRadius:2},
+      {label:'ADS/GMV%',data:adsMC.labels.map(function(d){var g=adsMC.byField[d]?.gmv_ads||0,t=glC.byField[d]?.gmv||0;return t?+(g/t*100).toFixed(2):null;}),borderColor:'#FF7733',fill:false,tension:.3,pointRadius:2}
     ],{yFmt:v=>v?.toFixed(1)+'%'});
+  } else {
+    var cM=pc.chartMonths||pc.curr||allAdsK.slice(-6);
+    makeChart('ch-ads-invest','bar',cM,[{label:'Invest. ADS',data:cM.map(function(m){return allAds[m]?.ads_invest||0;}),backgroundColor:'#9B59B6',borderRadius:4}],{yFmt:v=>'R$'+v.toLocaleString('pt-BR',{notation:'compact'})});
+    makeChart('ch-gmv-ads','bar',cM,[{label:'GMV via ADS',data:cM.map(function(m){return allAds[m]?.gmv_ads||0;}),backgroundColor:'#3483FA',borderRadius:4}],{yFmt:v=>'R$'+v.toLocaleString('pt-BR',{notation:'compact'})});
+    makeChart('ch-roas','line',cM,[{label:'ROAS',data:cM.map(function(m){var i=allAds[m]?.ads_invest||0,g=allAds[m]?.gmv_ads||0;return i?+(g/i).toFixed(2):null;}),borderColor:'#1ABC9C',backgroundColor:'#1ABC9C22',fill:true,tension:.3,pointRadius:3}]);
+    makeChart('ch-ads-perc','line',cM,[
+      {label:'ACOS%',data:cM.map(function(m){var i=allAds[m]?.ads_invest||0,g=allAds[m]?.gmv_ads||0;return g?+(i/g*100).toFixed(2):null;}),borderColor:'#E83C49',fill:false,tension:.3,pointRadius:3},
+      {label:'ADS/GMV%',data:cM.map(function(m){var g=allAds[m]?.gmv_ads||0,t=allGmv[m]?.gmv||0;return t?+(g/t*100).toFixed(2):null;}),borderColor:'#FF7733',fill:false,tension:.3,pointRadius:3}
+    ],{yFmt:v=>v?.toFixed(1)+'%'});
+  }
+  // Take Rate: always monthly (derived metric)
+  makeChart('ch-take-rate','line',allAdsK,[{label:'Take Rate %',data:allAdsK.map(function(m,idx){var prev=allAdsK[idx-1];var inv=allAds[m]?.ads_invest||0,gp=allGmv[prev]?.gmv||0;return gp?+(inv/gp*100).toFixed(2):null;}),borderColor:'#3483FA',backgroundColor:'#3483FA22',fill:true,tension:.3,pointRadius:3}],{yFmt:v=>v?.toFixed(1)+'%'});
 
-  // Seller table: Invest, GMV ADS, Clicks, ROAS, ACOS, Take Rate, ADS/GMV%
+  // Seller table
   var bySA=aggBySeller(RAW.ads_monthly,meses,['ads_invest','gmv_ads','clicks']);
   var bySG=aggBySeller(RAW.geral_monthly,meses,['gmv']);
-  // For Take Rate per seller: need previous period GMV
-  var prevMesForTR = prevMTR ? [prevMTR] : [];
-  var bySGprev = aggBySeller(RAW.geral_monthly, prevMesForTR, ['gmv']);
-
-  var h='<thead><tr>'
-       +'<th>Seller</th><th>Invest. ADS</th><th>GMV via ADS</th><th>Clicks</th>'
-       +'<th>ROAS</th><th>ACOS</th><th>Take Rate</th><th>ADS/GMV%</th>'
-       +'</tr></thead><tbody>';
-  Object.entries(bySA).sort(function(a,b){return b[1].ads_invest-a[1].ads_invest;})
-    .forEach(function([cid,v]){
-      var g=v.gmv_ads||0,inv=v.ads_invest||0,tg=bySG[cid]?.gmv||0;
-      var prevGmv=bySGprev[cid]?.gmv||0;
-      var r=inv?+(g/inv).toFixed(2):0;
-      var ac=g?+(inv/g*100).toFixed(1):0;
-      var ag=tg?+(g/tg*100).toFixed(1):0;
-      var tr=prevGmv?+(inv/prevGmv*100).toFixed(1):null;
-      h+='<tr><td>'+sellerLabel(cid)+'</td>'
-        +'<td>'+fmtBRL(inv)+'</td>'
-        +'<td>'+fmtBRL(g)+'</td>'
-        +'<td>'+fmtNum(v.clicks)+'</td>'
-        +'<td>'+fmtDec(r)+'</td>'
-        +'<td>'+fmtPct(ac)+'</td>'
-        +'<td>'+fmtPct(tr)+'</td>'
-        +'<td>'+fmtPct(ag)+'</td>'
-        +'</tr>';
-    });
+  var bySGprev=aggBySeller(RAW.geral_monthly,prevMTR?[prevMTR]:[],['gmv']);
+  var h='<thead><tr><th>Seller</th><th>Invest. ADS</th><th>GMV via ADS</th><th>Clicks</th><th>ROAS</th><th>ACOS</th><th>Take Rate</th><th>ADS/GMV%</th></tr></thead><tbody>';
+  Object.entries(bySA).sort(function(a,b){return b[1].ads_invest-a[1].ads_invest;}).forEach(function([cid,v]){
+    var g=v.gmv_ads||0,inv=v.ads_invest||0,tg=bySG[cid]?.gmv||0,pg=bySGprev[cid]?.gmv||0;
+    var r=inv?+(g/inv).toFixed(2):0,ac=g?+(inv/g*100).toFixed(1):0,ag=tg?+(g/tg*100).toFixed(1):0,tr=pg?+(inv/pg*100).toFixed(1):null;
+    h+='<tr><td>'+sellerLabel(cid)+'</td><td>'+fmtBRL(inv)+'</td><td>'+fmtBRL(g)+'</td><td>'+fmtNum(v.clicks)+'</td><td>'+fmtDec(r)+'</td><td>'+fmtPct(ac)+'</td><td>'+fmtPct(tr)+'</td><td>'+fmtPct(ag)+'</td></tr>';
+  });
   document.getElementById('tbl-ads-sellers').innerHTML=h+'</tbody>';
 }
+function renderInvestimentos(){
+  var pc=getPeriodConfig(),allM=aggAllMonths(RAW.investimentos_monthly,['gmv','cupons','rebate_pre','rebate_outras','total_invest']);
+  setBadge('period-badge-inv',pc);
+  var meses=pc.gran==='daily'?(pc.currM||[]):(pc.curr||[]);
+  var invK=computeKPI(pc,allM,'total_invest');
+  var li={cupons:sumMeses(allM,meses,'cupons'),rebate_pre:sumMeses(allM,meses,'rebate_pre'),rebate_outras:sumMeses(allM,meses,'rebate_outras'),total_invest:invK.value};
+  document.getElementById('kpi-inv').innerHTML=
+    kpiCard('Total Investido',fmtBRL(li.total_invest),pc,invK.d1,invK.d2)+
+    '<div class="kpi-card"><div class="kpi-label">Cupons</div><div class="kpi-value">'+fmtBRL(li.cupons)+'</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>'+
+    '<div class="kpi-card"><div class="kpi-label">Rebate Pr\u00e9-neg.</div><div class="kpi-value">'+fmtBRL(li.rebate_pre)+'</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>'+
+    '<div class="kpi-card"><div class="kpi-label">Rebate Outras</div><div class="kpi-value">'+fmtBRL(li.rebate_outras)+'</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>';
 
-function renderInvestimentos(){
-  const pc=getPeriodConfig(),allM=aggAllMonths(RAW.investimentos_monthly,['gmv','cupons','rebate_pre','rebate_outras','total_invest']);
-  setBadge('period-badge-inv',pc);
-  // Fix 8: for daily, fall back to current month
-  const meses=pc.gran==='daily'?(pc.currM||[]):(pc.curr||[]);
-  const invK=computeKPI(pc,allM,'total_invest');
-  const li={cupons:sumMeses(allM,meses,'cupons'),rebate_pre:sumMeses(allM,meses,'rebate_pre'),rebate_outras:sumMeses(allM,meses,'rebate_outras'),total_invest:invK.value};
-  document.getElementById('kpi-inv').innerHTML=
-    kpiCard('Total Investido',fmtBRL(li.total_invest),pc,invK.d1,invK.d2)+
-    `<div class="kpi-card"><div class="kpi-label">Cupons</div><div class="kpi-value">${fmtBRL(li.cupons)}</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>`+
-    `<div class="kpi-card"><div class="kpi-label">Rebate Pr\u00e9-neg.</div><div class="kpi-value">${fmtBRL(li.rebate_pre)}</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>`+
-    `<div class="kpi-card"><div class="kpi-label">Rebate Outras</div><div class="kpi-value">${fmtBRL(li.rebate_outras)}</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>`;
-  const cy=aggCurrentYear(RAW.investimentos_monthly,['gmv','cupons','rebate_pre','rebate_outras','total_invest']),cym=Object.keys(cy).sort();
-  makeChart('ch-inv-total','bar',cym,[{label:'Cupons',data:cym.map(m=>cy[m]?.cupons||0),backgroundColor:'#FFE600',borderRadius:3},{label:'Rebate Pr\u00e9',data:cym.map(m=>cy[m]?.rebate_pre||0),backgroundColor:'#3483FA',borderRadius:3},{label:'Rebate Outras',data:cym.map(m=>cy[m]?.rebate_outras||0),backgroundColor:'#00A650',borderRadius:3}],{extra:{scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,grid:{color:'#F0F0F0'}}}}});
-  makeChart('ch-inv-mix','doughnut',['Cupons','Rebate Pr\u00e9-neg.','Rebate Outras'],[{data:[li.cupons,li.rebate_pre,li.rebate_outras],backgroundColor:['#FFE600','#3483FA','#00A650'],borderWidth:0}],{extra:{plugins:{legend:{display:true,position:'bottom'}}}});
-  makeChart('ch-cupons','line',cym,[{label:'Cupons',data:cym.map(m=>cy[m]?.cupons||0),borderColor:'#E67E22',backgroundColor:'#E67E2222',fill:true,tension:.3,pointRadius:3}],{yFmt:v=>'R$'+v.toLocaleString('pt-BR',{notation:'compact'})});
-  makeChart('ch-rebates','line',cym,[{label:'Pr\u00e9-neg.',data:cym.map(m=>cy[m]?.rebate_pre||0),borderColor:'#3483FA',fill:false,tension:.3,pointRadius:3},{label:'Outras',data:cym.map(m=>cy[m]?.rebate_outras||0),borderColor:'#00A650',fill:false,tension:.3,pointRadius:3}],{yFmt:v=>'R$'+v.toLocaleString('pt-BR',{notation:'compact'})});
-  const bySI=aggBySeller(RAW.investimentos_monthly,meses,['gmv','cupons','rebate_pre','rebate_outras','total_invest']);
-  let h=`<thead><tr><th>Seller</th><th>GMV</th><th>Cupons</th><th>Rebate Pr\u00e9</th><th>Rebate Outras</th><th>Total Invest.</th><th>Invest/GMV%</th></tr></thead><tbody>`;
-  Object.entries(bySI).sort((a,b)=>b[1].total_invest-a[1].total_invest).forEach(([cid,v])=>{
-    const p2=v.gmv?(v.total_invest/v.gmv)*100:0;
-    h+=`<tr><td>${sellerLabel(cid)}</td><td>${fmtBRL(v.gmv)}</td><td>${fmtBRL(v.cupons)}</td><td>${fmtBRL(v.rebate_pre)}</td><td>${fmtBRL(v.rebate_outras)}</td><td><b>${fmtBRL(v.total_invest)}</b></td><td>${fmtPct(p2)}</td></tr>`;
-  });
-  document.getElementById('tbl-inv-sellers').innerHTML=h+'</tbody>';
-}
-
+  // CHARTS: daily for day/week/month, monthly for quarter/year
+  if(pc.chartGran==='daily'){
+    var s=pc.chartStart,e=pc.chartEnd;
+    var totC=aggDailyChart(RAW.investimentos_daily,'total_invest',s,e);
+    var invMC=aggDailyChartMulti(RAW.investimentos_daily,['cupons','rebate_pre','rebate_outras'],s,e);
+    makeChart('ch-inv-total','bar',totC.labels,[
+      {label:'Cupons',data:totC.labels.map(function(d){return invMC.byField[d]?.cupons||0;}),backgroundColor:'#FFE600',borderRadius:2},
+      {label:'Rebate Pr\u00e9',data:totC.labels.map(function(d){return invMC.byField[d]?.rebate_pre||0;}),backgroundColor:'#3483FA',borderRadius:2},
+      {label:'Rebate Outras',data:totC.labels.map(function(d){return invMC.byField[d]?.rebate_outras||0;}),backgroundColor:'#00A650',borderRadius:2}
+    ],{extra:{scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,grid:{color:'#F0F0F0'}}}}});
+    makeChart('ch-cupons','line',totC.labels,[{label:'Cupons',data:totC.labels.map(function(d){return invMC.byField[d]?.cupons||0;}),borderColor:'#E67E22',backgroundColor:'#E67E2222',fill:true,tension:.3,pointRadius:2}],{yFmt:v=>'R$'+v.toLocaleString('pt-BR',{notation:'compact'})});
+    makeChart('ch-rebates','line',totC.labels,[
+      {label:'Pr\u00e9-neg.',data:totC.labels.map(function(d){return invMC.byField[d]?.rebate_pre||0;}),borderColor:'#3483FA',fill:false,tension:.3,pointRadius:2},
+      {label:'Outras',data:totC.labels.map(function(d){return invMC.byField[d]?.rebate_outras||0;}),borderColor:'#00A650',fill:false,tension:.3,pointRadius:2}
+    ],{yFmt:v=>'R$'+v.toLocaleString('pt-BR',{notation:'compact'})});
+  } else {
+    var cM=pc.chartMonths||pc.curr;
+    makeChart('ch-inv-total','bar',cM,[
+      {label:'Cupons',data:cM.map(function(m){return allM[m]?.cupons||0;}),backgroundColor:'#FFE600',borderRadius:3},
+      {label:'Rebate Pr\u00e9',data:cM.map(function(m){return allM[m]?.rebate_pre||0;}),backgroundColor:'#3483FA',borderRadius:3},
+      {label:'Rebate Outras',data:cM.map(function(m){return allM[m]?.rebate_outras||0;}),backgroundColor:'#00A650',borderRadius:3}
+    ],{extra:{scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,grid:{color:'#F0F0F0'}}}}});
+    makeChart('ch-cupons','line',cM,[{label:'Cupons',data:cM.map(function(m){return allM[m]?.cupons||0;}),borderColor:'#E67E22',backgroundColor:'#E67E2222',fill:true,tension:.3,pointRadius:3}],{yFmt:v=>'R$'+v.toLocaleString('pt-BR',{notation:'compact'})});
+    makeChart('ch-rebates','line',cM,[
+      {label:'Pr\u00e9-neg.',data:cM.map(function(m){return allM[m]?.rebate_pre||0;}),borderColor:'#3483FA',fill:false,tension:.3,pointRadius:3},
+      {label:'Outras',data:cM.map(function(m){return allM[m]?.rebate_outras||0;}),borderColor:'#00A650',fill:false,tension:.3,pointRadius:3}
+    ],{yFmt:v=>'R$'+v.toLocaleString('pt-BR',{notation:'compact'})});
+  }
+  // Mix donut: always current period
+  makeChart('ch-inv-mix','doughnut',['Cupons','Rebate Pr\u00e9-neg.','Rebate Outras'],
+    [{data:[li.cupons,li.rebate_pre,li.rebate_outras],backgroundColor:['#FFE600','#3483FA','#00A650'],borderWidth:0}],
+    {extra:{plugins:{legend:{display:true,position:'bottom'}}}});
+
+  var bySI=aggBySeller(RAW.investimentos_monthly,meses,['gmv','cupons','rebate_pre','rebate_outras','total_invest']);
+  var h='<thead><tr><th>Seller</th><th>GMV</th><th>Cupons</th><th>Rebate Pr\u00e9</th><th>Rebate Outras</th><th>Total Invest.</th><th>Invest/GMV%</th></tr></thead><tbody>';
+  Object.entries(bySI).sort(function(a,b){return b[1].total_invest-a[1].total_invest;}).forEach(function([cid,v]){
+    var p2=v.gmv?(v.total_invest/v.gmv)*100:0;
+    h+='<tr><td>'+sellerLabel(cid)+'</td><td>'+fmtBRL(v.gmv)+'</td><td>'+fmtBRL(v.cupons)+'</td><td>'+fmtBRL(v.rebate_pre)+'</td><td>'+fmtBRL(v.rebate_outras)+'</td><td><b>'+fmtBRL(v.total_invest)+'</b></td><td>'+fmtPct(p2)+'</td></tr>';
+  });
+  document.getElementById('tbl-inv-sellers').innerHTML=h+'</tbody>';
+}
 function renderCatalogo(){
   const ids=sellerIds(state.seller),rows=RAW.catalogo_items.filter(r=>ids.includes(String(r.cust_id)));
   const tG=rows.reduce((a,r)=>a+(Number(r.gmv)||0),0);
