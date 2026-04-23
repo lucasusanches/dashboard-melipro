@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 460" width="400" height="460">
+  <defs>
+    <clipPath id="oval-clip">
+      <ellipse cx="200" cy="165" rx="172" ry="132"/>
+    </clipPath>
+  </defs>
+  <!-- Oval white base -->
+  <ellipse cx="200" cy="165" rx="172" ry="132" fill="#ffffff"/>
+  <!-- Yellow lower fill -->
+  <rect x="28" y="178" width="344" height="119" fill="#FFE600" clip-path="url(#oval-clip)"/>
+  <!-- Dark blue border -->
+  <ellipse cx="200" cy="165" rx="172" ry="132" fill="none" stroke="#2D3277" stroke-width="16"/>
+
+  <!-- Handshake silhouette (simplified faithful representation) -->
+  <!-- Left arm/hand from left -->
+  <path d="M50 170 Q70 148 95 152 L118 144 L140 138 L158 142 Q168 148 166 162
+           L148 160 L130 156 L114 158 Q98 164 86 178 Q70 186 50 176 Z"
+        fill="#ffffff"/>
+  <!-- Right arm/hand from right -->
+  <path d="M350 170 Q330 148 305 152 L282 144 L260 138 L242 142 Q232 148 234 162
+           L252 160 L270 156 L286 158 Q302 164 314 178 Q330 186 350 176 Z"
+        fill="#ffffff"/>
+  <!-- Center clasped hands -->
+  <ellipse cx="200" cy="155" rx="42" ry="26" fill="#ffffff"/>
+  <!-- Knuckles left -->
+  <circle cx="164" cy="166" r="7" fill="#ffffff"/>
+  <circle cx="152" cy="172" r="6" fill="#ffffff"/>
+  <circle cx="140" cy="174" r="5.5" fill="#ffffff"/>
+  <!-- Knuckles right -->
+  <circle cx="236" cy="166" r="7" fill="#ffffff"/>
+  <circle cx="248" cy="172" r="6" fill="#ffffff"/>
+  <circle cx="260" cy="174" r="5.5" fill="#ffffff"/>
+  <!-- Thumb left -->
+  <ellipse cx="174" cy="140" rx="8" ry="14" fill="#ffffff" transform="rotate(-25,174,140)"/>
+  <!-- Thumb right -->
+  <ellipse cx="226" cy="140" rx="8" ry="14" fill="#ffffff" transform="rotate(25,226,140)"/>
+
+  <!-- Text: mercado -->
+  <text x="200" y="358"
+    text-anchor="middle"
+    font-family="'Arial Black','Arial','Helvetica',sans-serif"
+    font-weight="900"
+    font-size="72"
+    letter-spacing="-1"
+    fill="#2D3277">mercado</text>
+  <!-- Text: livre -->
+  <text x="200" y="440"
+    text-anchor="middle"
+    font-family="'Arial Black','Arial','Helvetica',sans-serif"
+    font-weight="900"
+    font-size="80"
+    letter-spacing="-1"
+    fill="#2D3277">livre</text>
+</svg>
