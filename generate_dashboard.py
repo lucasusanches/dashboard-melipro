@@ -412,9 +412,10 @@ td:first-child{text-align:left;font-weight:500}
         <div id="period-badge-ads" class="period-badge"></div>
         <div class="kpi-grid" id="kpi-ads"></div>
         <div class="chart-grid">
-          <div class="chart-card"><div class="chart-title">Investimento ADS Mensal (R$)</div><div class="chart-wrap"><canvas id="ch-ads-invest"></canvas></div></div>
-          <div class="chart-card"><div class="chart-title">ROAS Mensal</div><div class="chart-wrap"><canvas id="ch-roas"></canvas></div></div>
-          <div class="chart-card"><div class="chart-title">ADS/GMV % Mensal</div><div class="chart-wrap"><canvas id="ch-ads-perc"></canvas></div></div>
+          <div class="chart-card"><div class="chart-title">Investimento ADS (R$)</div><div class="chart-wrap"><canvas id="ch-ads-invest"></canvas></div></div>
+          <div class="chart-card"><div class="chart-title">GMV via ADS (R$)</div><div class="chart-wrap"><canvas id="ch-gmv-ads"></canvas></div></div>
+          <div class="chart-card"><div class="chart-title">ROAS Mensal</div><div class="chart-wrap"><canvas id="ch-roas"></canvas></div></div>
+          <div class="chart-card"><div class="chart-title">ACOS% e ADS/GMV%</div><div class="chart-wrap"><canvas id="ch-ads-perc"></canvas></div></div>
           <div class="chart-card"><div class="chart-title">Take Rate ADS (%)</div><div class="chart-wrap"><canvas id="ch-take-rate"></canvas></div></div>
         </div>
         <div class="section-title">Detalhe por Seller</div>
@@ -760,68 +761,147 @@ function renderAds(){
   setBadge('period-badge-ads',pc);
   const meses=pc.gran==='daily'?(pc.currM||[]):(pc.curr||[]);
 
-  // ADS data from BT_ADS_PADS_METRICS_DAILY
   const allAds=aggAllMonths(RAW.ads_monthly,['ads_invest','gmv_ads','clicks']);
   const allGmv=aggAllMonths(RAW.geral_monthly,['gmv']);
   const allAdsK=Object.keys(allAds).sort();
 
-  const invK=computeKPI(pc,allAds,'ads_invest');
-  const gmvAdsK=computeKPI(pc,allAds,'gmv_ads');
-  const invV=invK.value;
-  const gmvAdsV=sumMeses(allAds,meses,'gmv_ads');
-  const totalGmvV=sumMeses(allGmv,meses,'gmv');
-  const clicksV=sumMeses(allAds,meses,'clicks');
-
-  // KPI metrics
-  const roas    = invV    ? +(gmvAdsV/invV).toFixed(2)        : 0;
-  const acos    = gmvAdsV ? +(invV/gmvAdsV*100).toFixed(2)    : 0;
-  const adsgmv  = totalGmvV ? +(gmvAdsV/totalGmvV*100).toFixed(2) : 0;
+  // Current period values
+  const invV    = sumMeses(allAds,meses,'ads_invest');
+  const gmvAdsV = sumMeses(allAds,meses,'gmv_ads');
+  const totalGmvV = sumMeses(allGmv,meses,'gmv');
+  const roas    = invV    ? +(gmvAdsV/invV).toFixed(2)          : 0;
+  const acos    = gmvAdsV ? +(invV/gmvAdsV*100).toFixed(2)      : 0;
+  const adsgmv  = totalGmvV ? +(gmvAdsV/totalGmvV*100).toFixed(2): 0;
   const lastM   = meses[meses.length-1]||'';
-  const prevM   = allAdsK[allAdsK.indexOf(lastM)-1];
-  const takeRate= prevM&&allGmv[prevM]?.gmv ? +(invV/allGmv[prevM].gmv*100).toFixed(2) : null;
+  const prevMTR = allAdsK[allAdsK.indexOf(lastM)-1];
+  const takeRate= prevMTR&&allGmv[prevMTR]?.gmv
+                  ? +(invV/allGmv[prevMTR].gmv*100).toFixed(2) : null;
+
+  // MoM comparison values (for derived %)
+  function calcMetrics(ms){
+    var inv=sumMeses(allAds,ms,'ads_invest'),g=sumMeses(allAds,ms,'gmv_ads'),tg=sumMeses(allGmv,ms,'gmv');
+    var lastMom=ms[ms.length-1]||'',prevTR=allAdsK[allAdsK.indexOf(lastMom)-1];
+    return {
+      roas:  inv  ? g/inv         : 0,
+      acos:  g    ? inv/g*100     : 0,
+      adsgmv:tg   ? g/tg*100      : 0,
+      takeRate: prevTR&&allGmv[prevTR]?.gmv ? inv/allGmv[prevTR].gmv*100 : null
+    };
+  }
+  var prevMoMMs  = pc.prevMoM  || (pc.prevQoQ||null);
+  var prevYoYMs  = pc.prevYoY  || null;
+  var momMetrics = prevMoMMs ? calcMetrics(prevMoMMs) : null;
+  var yoyMetrics = prevYoYMs ? calcMetrics(prevYoYMs) : null;
+
+  // Standard delta helpers
+  var invK = computeKPI(pc,allAds,'ads_invest');
+  var gmvAdsK = computeKPI(pc,allAds,'gmv_ads');
+
+  // pp delta helper (for %, lower = better for ACOS; higher = better for ROAS/ADS/GMV%)
+  function ppCard(label,value,fmtFn,cur,momM,yoyM,lowerBetter){
+    var dh='';
+    if(momM!=null){
+      var diff=+(cur-momM).toFixed(1);
+      var good=lowerBetter?(diff<0):(diff>0);
+      var cls=good?'dp':'dn',arr=diff>0?'\u25b2':'\u25bc';
+      dh+='<span class="'+cls+'">MoM: '+arr+Math.abs(diff).toFixed(1)+'pp</span>';
+    }
+    if(yoyM!=null){
+      var diff2=+(cur-yoyM).toFixed(1);
+      var good2=lowerBetter?(diff2<0):(diff2>0);
+      var cls2=good2?'dp':'dn',arr2=diff2>0?'\u25b2':'\u25bc';
+      dh+=' <span class="'+cls2+'">YoY: '+arr2+Math.abs(diff2).toFixed(1)+'pp</span>';
+    }
+    if(!dh) dh='<span class="dn0">\u2014</span>';
+    return '<div class="kpi-card"><div class="kpi-label">'+label+'</div>'
+          +'<div class="kpi-value">'+fmtFn(value)+'</div>'
+          +'<div class="kpi-delta">'+dh+'</div></div>';
+  }
+
+  // Standard % delta for ROAS
+  var roasMom = momMetrics ? (momMetrics.roas ? (roas-momMetrics.roas)/momMetrics.roas*100 : null) : null;
+  var roasYoy = yoyMetrics ? (yoyMetrics.roas ? (roas-yoyMetrics.roas)/yoyMetrics.roas*100 : null) : null;
 
   document.getElementById('kpi-ads').innerHTML=
     kpiCard('Investimento ADS',fmtBRL(invV),pc,invK.d1,invK.d2)+
     kpiCard('GMV via ADS',fmtBRL(gmvAdsV),pc,gmvAdsK.d1,gmvAdsK.d2)+
-    '<div class="kpi-card"><div class="kpi-label">ROAS</div><div class="kpi-value">'+fmtDec(roas)+'</div><div class="kpi-delta"><span class="dn0">GMV ADS / Invest.</span></div></div>'+
-    '<div class="kpi-card"><div class="kpi-label">ACOS</div><div class="kpi-value">'+fmtPct(acos)+'</div><div class="kpi-delta"><span class="dn0">Invest. / GMV ADS</span></div></div>'+
-    '<div class="kpi-card"><div class="kpi-label">ADS/GMV%</div><div class="kpi-value">'+fmtPct(adsgmv)+'</div><div class="kpi-delta"><span class="dn0">GMV ADS / GMV Total</span></div></div>'+
-    '<div class="kpi-card"><div class="kpi-label">Take Rate ADS</div><div class="kpi-value">'+fmtPct(takeRate)+'</div><div class="kpi-delta"><span class="dn0">Invest(M)/GMV(M-1)</span></div></div>';
+    ppCard('ROAS',roas,fmtDec,roas,
+           momMetrics?momMetrics.roas:null, yoyMetrics?yoyMetrics.roas:null, false)+
+    ppCard('ACOS',acos,fmtPct,acos,
+           momMetrics?momMetrics.acos:null, yoyMetrics?yoyMetrics.acos:null, true)+
+    ppCard('ADS/GMV%',adsgmv,fmtPct,adsgmv,
+           momMetrics?momMetrics.adsgmv:null, yoyMetrics?yoyMetrics.adsgmv:null, false)+
+    ppCard('Take Rate ADS',takeRate,fmtPct,takeRate,
+           momMetrics?momMetrics.takeRate:null, yoyMetrics?yoyMetrics.takeRate:null, false);
 
-  // Charts: selected months
-  const chartM  = meses.length ? meses : allAdsK.slice(-6);
+  // Charts: last 12 months available (regardless of period filter)
+  var chartM = allAdsK.slice(-12);
+  if(pc.type==='custom'&&meses.length) chartM=meses;
+
   makeChart('ch-ads-invest','bar',chartM,
-    [{label:'Investimento ADS',data:chartM.map(m=>allAds[m]?.ads_invest||0),backgroundColor:'#9B59B6',borderRadius:4}],
+    [{label:'Investimento ADS',data:chartM.map(m=>allAds[m]?.ads_invest||0),
+      backgroundColor:'#9B59B6',borderRadius:4}],
+    {yFmt:v=>'R$'+v.toLocaleString('pt-BR',{notation:'compact'})});
+
+  makeChart('ch-gmv-ads','bar',chartM,
+    [{label:'GMV via ADS',data:chartM.map(m=>allAds[m]?.gmv_ads||0),
+      backgroundColor:'#3483FA',borderRadius:4}],
     {yFmt:v=>'R$'+v.toLocaleString('pt-BR',{notation:'compact'})});
 
   makeChart('ch-roas','line',chartM,
-    [{label:'ROAS',data:chartM.map(m=>{var inv=allAds[m]?.ads_invest||0,g=allAds[m]?.gmv_ads||0;return inv?+(g/inv).toFixed(2):null;}),
-      borderColor:'#1ABC9C',backgroundColor:'#1ABC9C22',fill:true,tension:.3,pointRadius:4}]);
+    [{label:'ROAS',data:chartM.map(m=>{
+        var i=allAds[m]?.ads_invest||0,g=allAds[m]?.gmv_ads||0;
+        return i?+(g/i).toFixed(2):null;
+      }),borderColor:'#1ABC9C',backgroundColor:'#1ABC9C22',fill:true,tension:.3,pointRadius:4}]);
 
   makeChart('ch-ads-perc','line',chartM,[
-    {label:'ADS/GMV%',data:chartM.map(m=>{var g=allAds[m]?.gmv_ads||0,t=allGmv[m]?.gmv||0;return t?+(g/t*100).toFixed(2):null;}),
-      borderColor:'#E83C49',backgroundColor:'#E83C4922',fill:true,tension:.3,pointRadius:4},
-    {label:'ACOS%',data:chartM.map(m=>{var inv=allAds[m]?.ads_invest||0,g=allAds[m]?.gmv_ads||0;return g?+(inv/g*100).toFixed(2):null;}),
-      borderColor:'#FF7733',fill:false,tension:.3,pointRadius:4}
+    {label:'ACOS%',data:chartM.map(m=>{
+        var i=allAds[m]?.ads_invest||0,g=allAds[m]?.gmv_ads||0;
+        return g?+(i/g*100).toFixed(2):null;
+      }),borderColor:'#E83C49',fill:false,tension:.3,pointRadius:4},
+    {label:'ADS/GMV%',data:chartM.map(m=>{
+        var g=allAds[m]?.gmv_ads||0,t=allGmv[m]?.gmv||0;
+        return t?+(g/t*100).toFixed(2):null;
+      }),borderColor:'#FF7733',fill:false,tension:.3,pointRadius:4}
   ],{yFmt:v=>v?.toFixed(1)+'%'});
 
-  makeChart('ch-take-rate','line',allAdsK,[
-    {label:'Take Rate %',data:allAdsK.map(function(m,idx){
-        var prev=allAdsK[idx-1];
+  makeChart('ch-take-rate','line',chartM,
+    [{label:'Take Rate %',data:chartM.map(function(m,idx){
+        var prev=allAdsK[allAdsK.indexOf(m)-1];
         var inv=allAds[m]?.ads_invest||0,gp=allGmv[prev]?.gmv||0;
         return gp?+(inv/gp*100).toFixed(2):null;
       }),borderColor:'#3483FA',backgroundColor:'#3483FA22',fill:true,tension:.3,pointRadius:4}
-  ],{yFmt:v=>v?.toFixed(1)+'%'});
+    ],{yFmt:v=>v?.toFixed(1)+'%'});
 
-  // Seller table
-  const bySA=aggBySeller(RAW.ads_monthly,meses,['ads_invest','gmv_ads','clicks']);
-  const bySG=aggBySeller(RAW.geral_monthly,meses,['gmv']);
-  var h='<thead><tr><th>Seller</th><th>Invest. ADS</th><th>GMV via ADS</th><th>Clicks</th><th>ROAS</th><th>ACOS</th><th>ADS/GMV%</th></tr></thead><tbody>';
-  Object.entries(bySA).sort(function(a,b){return b[1].ads_invest-a[1].ads_invest;}).forEach(function([cid,v]){
-    var g=v.gmv_ads||0,inv=v.ads_invest||0,tg=bySG[cid]?.gmv||0;
-    var r=inv?+(g/inv).toFixed(2):0,ac=g?+(inv/g*100).toFixed(1):0,ag=tg?+(g/tg*100).toFixed(1):0;
-    h+='<tr><td>'+sellerLabel(cid)+'</td><td>'+fmtBRL(inv)+'</td><td>'+fmtBRL(g)+'</td><td>'+fmtNum(v.clicks)+'</td><td>'+fmtDec(r)+'</td><td>'+fmtPct(ac)+'</td><td>'+fmtPct(ag)+'</td></tr>';
-  });
+  // Seller table: Invest, GMV ADS, Clicks, ROAS, ACOS, Take Rate, ADS/GMV%
+  var bySA=aggBySeller(RAW.ads_monthly,meses,['ads_invest','gmv_ads','clicks']);
+  var bySG=aggBySeller(RAW.geral_monthly,meses,['gmv']);
+  // For Take Rate per seller: need previous period GMV
+  var prevMesForTR = prevMTR ? [prevMTR] : [];
+  var bySGprev = aggBySeller(RAW.geral_monthly, prevMesForTR, ['gmv']);
+
+  var h='<thead><tr>'
+       +'<th>Seller</th><th>Invest. ADS</th><th>GMV via ADS</th><th>Clicks</th>'
+       +'<th>ROAS</th><th>ACOS</th><th>Take Rate</th><th>ADS/GMV%</th>'
+       +'</tr></thead><tbody>';
+  Object.entries(bySA).sort(function(a,b){return b[1].ads_invest-a[1].ads_invest;})
+    .forEach(function([cid,v]){
+      var g=v.gmv_ads||0,inv=v.ads_invest||0,tg=bySG[cid]?.gmv||0;
+      var prevGmv=bySGprev[cid]?.gmv||0;
+      var r=inv?+(g/inv).toFixed(2):0;
+      var ac=g?+(inv/g*100).toFixed(1):0;
+      var ag=tg?+(g/tg*100).toFixed(1):0;
+      var tr=prevGmv?+(inv/prevGmv*100).toFixed(1):null;
+      h+='<tr><td>'+sellerLabel(cid)+'</td>'
+        +'<td>'+fmtBRL(inv)+'</td>'
+        +'<td>'+fmtBRL(g)+'</td>'
+        +'<td>'+fmtNum(v.clicks)+'</td>'
+        +'<td>'+fmtDec(r)+'</td>'
+        +'<td>'+fmtPct(ac)+'</td>'
+        +'<td>'+fmtPct(tr)+'</td>'
+        +'<td>'+fmtPct(ag)+'</td>'
+        +'</tr>';
+    });
   document.getElementById('tbl-ads-sellers').innerHTML=h+'</tbody>';
 }
 
