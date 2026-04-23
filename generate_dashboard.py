@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 from datetime import date, datetime
+from decimal import Decimal
 from google.cloud import bigquery
 
 # Ensure UTF-8 output on Windows
@@ -59,7 +60,7 @@ def q_geral_monthly():
         FROM {TABLE}
         WHERE CUS_CUST_ID_SEL IN ({IDS_STR})
           AND GMV_FLG = TRUE
-          AND ORD_CLOSED_DT >= DATE_SUB(CURRENT_DATE(), INTERVAL 25 MONTH)
+          AND ORD_CLOSED_DT >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 YEAR), YEAR)
         GROUP BY 1, 2
         ORDER BY 1, 2
     """)
@@ -102,7 +103,7 @@ def q_logistica_monthly():
         FROM {TABLE}
         WHERE CUS_CUST_ID_SEL IN ({IDS_STR})
           AND GMV_FLG = TRUE
-          AND ORD_CLOSED_DT >= DATE_SUB(CURRENT_DATE(), INTERVAL 25 MONTH)
+          AND ORD_CLOSED_DT >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 YEAR), YEAR)
         GROUP BY 1, 2
         ORDER BY 1, 2
     """)
@@ -120,7 +121,7 @@ def q_ads_monthly():
         FROM {TABLE}
         WHERE CUS_CUST_ID_SEL IN ({IDS_STR})
           AND GMV_FLG = TRUE
-          AND ORD_CLOSED_DT >= DATE_SUB(CURRENT_DATE(), INTERVAL 25 MONTH)
+          AND ORD_CLOSED_DT >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 YEAR), YEAR)
         GROUP BY 1, 2
         ORDER BY 1, 2
     """)
@@ -140,7 +141,7 @@ def q_investimentos_monthly():
         FROM {TABLE}
         WHERE CUS_CUST_ID_SEL IN ({IDS_STR})
           AND GMV_FLG = TRUE
-          AND ORD_CLOSED_DT >= DATE_SUB(CURRENT_DATE(), INTERVAL 25 MONTH)
+          AND ORD_CLOSED_DT >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 YEAR), YEAR)
         GROUP BY 1, 2
         ORDER BY 1, 2
     """)
@@ -159,7 +160,7 @@ def q_buybox_monthly():
         FROM {TABLE}
         WHERE CUS_CUST_ID_SEL IN ({IDS_STR})
           AND GMV_FLG = TRUE
-          AND ORD_CLOSED_DT >= DATE_SUB(CURRENT_DATE(), INTERVAL 25 MONTH)
+          AND ORD_CLOSED_DT >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 YEAR), YEAR)
         GROUP BY 1, 2
         ORDER BY 1, 2
     """)
@@ -209,6 +210,8 @@ def build_dataset() -> dict:
     def clean(obj):
         if isinstance(obj, (date, datetime)):
             return str(obj)
+        if isinstance(obj, Decimal):
+            return float(obj)
         return obj
 
     def clean_rows(rows):
@@ -532,7 +535,7 @@ function groupBySeller(rows, fields) {
   const ids = sellerIds(state.seller);
   rows.filter(r => ids.includes(r.cust_id)).forEach(r => {
     if (!out[r.cust_id]) { out[r.cust_id] = {}; fields.forEach(f => out[r.cust_id][f] = 0); }
-    fields.forEach(f => out[r.cust_id][f] += (r[f] || 0));
+    fields.forEach(f => out[r.cust_id][f] += (Number(r[f]) || 0));
   });
   return out;
 }
@@ -543,7 +546,30 @@ function aggregateByMonth(rows, fields) {
   const out  = {};
   rows.filter(r => ids.includes(r.cust_id) && r.mes >= cut).forEach(r => {
     if (!out[r.mes]) { out[r.mes] = {}; fields.forEach(f => out[r.mes][f] = 0); }
-    fields.forEach(f => out[r.mes][f] += (r[f] || 0));
+    fields.forEach(f => out[r.mes][f] += (Number(r[f]) || 0));
+  });
+  return out;
+}
+
+// Para gráficos: sempre ano corrente, independente do filtro de período
+function aggregateCurrentYear(rows, fields) {
+  const ids     = sellerIds(state.seller);
+  const yearStr = String(new Date().getFullYear());
+  const out     = {};
+  rows.filter(r => ids.includes(r.cust_id) && r.mes.startsWith(yearStr)).forEach(r => {
+    if (!out[r.mes]) { out[r.mes] = {}; fields.forEach(f => out[r.mes][f] = 0); }
+    fields.forEach(f => out[r.mes][f] += (Number(r[f]) || 0));
+  });
+  return out;
+}
+
+// Para YoY: agrega todos os meses disponíveis (2 anos), sem filtro de período
+function aggregateAllMonths(rows, fields) {
+  const ids = sellerIds(state.seller);
+  const out = {};
+  rows.filter(r => ids.includes(r.cust_id)).forEach(r => {
+    if (!out[r.mes]) { out[r.mes] = {}; fields.forEach(f => out[r.mes][f] = 0); }
+    fields.forEach(f => out[r.mes][f] += (Number(r[f]) || 0));
   });
   return out;
 }
@@ -554,7 +580,7 @@ function aggregateByDay(rows, fields) {
   const out  = {};
   rows.filter(r => ids.includes(r.cust_id) && r.dia >= cut).forEach(r => {
     if (!out[r.dia]) { out[r.dia] = {}; fields.forEach(f => out[r.dia][f] = 0); }
-    fields.forEach(f => out[r.dia][f] += (r[f] || 0));
+    fields.forEach(f => out[r.dia][f] += (Number(r[f]) || 0));
   });
   return out;
 }
@@ -623,66 +649,68 @@ function calcDeltas(monthlyMap, field) {
 
 // ── RENDER: Geral ─────────────────────────────────────────────────────────
 function renderGeral() {
-  const monthly = aggregateByMonth(RAW.geral_monthly, ['gmv','si']);
-  const months  = Object.keys(monthly).sort();
-  const gmvLast = monthly[months[months.length-1]]?.gmv || 0;
-  const siLast  = monthly[months[months.length-1]]?.si  || 0;
-  const aspLast = siLast ? gmvLast / siLast : 0;
-  const gd = calcDeltas(monthly, 'gmv');
-  const sd = calcDeltas(monthly, 'si');
-  const aspM = aggregateByMonth(RAW.geral_monthly, ['gmv','si']);
-  const aspMonths = Object.keys(aspM).sort();
-  const aspPrev = aspMonths.length > 1
-    ? (aspM[aspMonths[aspMonths.length-2]]?.gmv / (aspM[aspMonths[aspMonths.length-2]]?.si || 1)) : 0;
-  const aspYYKey = aspMonths.find(m => m.slice(0,4) === String(parseInt(aspMonths[aspMonths.length-1].slice(0,4))-1) && m.slice(5) === aspMonths[aspMonths.length-1].slice(5));
-  const aspYY = aspYYKey ? (aspM[aspYYKey]?.gmv / (aspM[aspYYKey]?.si || 1)) : null;
-  const aspMomPct = aspPrev ? ((aspLast - aspPrev)/aspPrev)*100 : null;
-  const aspYoyPct = aspYY  ? ((aspLast - aspYY)/aspYY)*100 : null;
+  // KPIs: período selecionado
+  const monthly   = aggregateByMonth(RAW.geral_monthly, ['gmv','si']);
+  const months    = Object.keys(monthly).sort();
+  const gmvLast   = monthly[months[months.length-1]]?.gmv || 0;
+  const siLast    = monthly[months[months.length-1]]?.si  || 0;
+  const aspLast   = siLast ? gmvLast / siLast : 0;
+  // YoY/MoM calculados sobre todos os meses disponíveis
+  const allM      = aggregateAllMonths(RAW.geral_monthly, ['gmv','si']);
+  const allMonths = Object.keys(allM).sort();
+  const gd = calcDeltas(allM, 'gmv');
+  const sd = calcDeltas(allM, 'si');
+  const lastM  = allMonths[allMonths.length-1] || '';
+  const prevM  = allMonths[allMonths.length-2];
+  const yoyKey = allMonths.find(m => m.slice(0,4)===String(parseInt(lastM.slice(0,4))-1)&&m.slice(5)===lastM.slice(5));
+  const aspPrev = prevM  ? (allM[prevM]?.gmv  / (allM[prevM]?.si ||1)) : null;
+  const aspYY   = yoyKey ? (allM[yoyKey]?.gmv / (allM[yoyKey]?.si||1)) : null;
+  const aspMom  = aspPrev ? ((aspLast-aspPrev)/aspPrev)*100 : null;
+  const aspYoy  = aspYY   ? ((aspLast-aspYY)  /aspYY  )*100 : null;
 
   document.getElementById('kpi-geral').innerHTML =
     kpiCard('GMV',   fmtBRL(gmvLast), gd.mom, gd.yoy) +
     kpiCard('SI (Unidades)', fmtNum(siLast), sd.mom, sd.yoy) +
-    kpiCard('ASP',   fmtBRL(aspLast), aspMomPct, aspYoyPct) +
+    kpiCard('ASP',   fmtBRL(aspLast), aspMom, aspYoy) +
     `<div class="kpi-card"><div class="kpi-label">Sellers Ativos</div>
      <div class="kpi-value" style="font-size:28px">${sellerIds(state.seller).length}</div>
      <div class="kpi-delta"><span class="delta-neu">Carteira MeliPro</span></div></div>`;
 
-  // GMV chart
-  makeChart('ch-gmv-mes','bar', months.slice(-13),
-    [{ label:'GMV', data: months.slice(-13).map(m=>monthly[m]?.gmv||0),
+  // Gráficos: apenas ano corrente
+  const cy       = aggregateCurrentYear(RAW.geral_monthly, ['gmv','si']);
+  const cyMonths = Object.keys(cy).sort();
+
+  makeChart('ch-gmv-mes','bar', cyMonths,
+    [{ label:'GMV', data: cyMonths.map(m=>cy[m]?.gmv||0),
        backgroundColor:'#3483FA', borderRadius:4 }],
     { yFmt: v => 'R$'+v.toLocaleString('pt-BR',{notation:'compact'}) });
 
-  // Delta chart
-  const deltaLabels = months.slice(-12);
-  const momData = deltaLabels.map((m,i) => {
-    const prev = months[months.indexOf(m)-1];
+  const momData = cyMonths.map(m => {
+    const prev = allMonths[allMonths.indexOf(m)-1];
     if (!prev) return null;
-    const vL = monthly[m]?.gmv||0, vP = monthly[prev]?.gmv||0;
-    return vP ? ((vL-vP)/vP)*100 : null;
+    const vL = allM[m]?.gmv||0, vP = allM[prev]?.gmv||0;
+    return vP ? +((vL-vP)/vP*100).toFixed(1) : null;
   });
-  const yoyData = deltaLabels.map(m => {
-    const yy = months.find(x => x.slice(0,4)===String(parseInt(m.slice(0,4))-1)&&x.slice(5)===m.slice(5));
+  const yoyData = cyMonths.map(m => {
+    const yy = allMonths.find(x => x.slice(0,4)===String(parseInt(m.slice(0,4))-1)&&x.slice(5)===m.slice(5));
     if (!yy) return null;
-    const vL = monthly[m]?.gmv||0, vY = monthly[yy]?.gmv||0;
-    return vY ? ((vL-vY)/vY)*100 : null;
+    const vL = allM[m]?.gmv||0, vY = allM[yy]?.gmv||0;
+    return vY ? +((vL-vY)/vY*100).toFixed(1) : null;
   });
-  makeChart('ch-gmv-delta','line', deltaLabels, [
+  makeChart('ch-gmv-delta','line', cyMonths, [
     { label:'MoM%', data:momData, borderColor:'#3483FA', backgroundColor:'#3483FA33', fill:true, tension:.3, pointRadius:3 },
     { label:'YoY%', data:yoyData, borderColor:'#E83C49', backgroundColor:'#E83C4933', fill:true, tension:.3, pointRadius:3 }
   ], { yFmt: v => v?.toFixed(1)+'%' });
 
-  // SI chart
-  makeChart('ch-si-mes','bar', months.slice(-13),
-    [{ label:'SI', data:months.slice(-13).map(m=>monthly[m]?.si||0),
+  makeChart('ch-si-mes','bar', cyMonths,
+    [{ label:'SI', data:cyMonths.map(m=>cy[m]?.si||0),
        backgroundColor:'#00A650', borderRadius:4 }]);
 
-  // ASP chart
-  const aspData = months.slice(-13).map(m => {
-    const g=monthly[m]?.gmv||0, s=monthly[m]?.si||0;
+  const aspData = cyMonths.map(m => {
+    const g=cy[m]?.gmv||0, s=cy[m]?.si||0;
     return s ? +(g/s).toFixed(2) : null;
   });
-  makeChart('ch-asp-mes','line', months.slice(-13),
+  makeChart('ch-asp-mes','line', cyMonths,
     [{ label:'ASP', data:aspData, borderColor:'#FF7733', backgroundColor:'#FF773333', fill:true, tension:.3, pointRadius:3 }],
     { yFmt: v => 'R$'+v?.toLocaleString('pt-BR',{maximumFractionDigits:0}) });
 
@@ -715,41 +743,50 @@ function renderLogistica() {
   const ffPct  = l.gmv_total ? (l.gmv_ff/l.gmv_total)*100 : 0;
   const xdPct  = l.gmv_total ? (l.gmv_xd/l.gmv_total)*100 : 0;
   const ssPct  = l.gmv_total ? (l.gmv_ss/l.gmv_total)*100 : 0;
-  const ffD = calcDeltas(monthly,'gmv_ff');
+  // KPIs com YoY/MoM usando todos os meses
+  const allL      = aggregateAllMonths(RAW.logistica_monthly, ['gmv_total','gmv_ff','gmv_xd','gmv_ss']);
+  const allLM     = Object.keys(allL).sort();
+  const lastLL    = allLM[allLM.length-1] || '';
+  const ll        = allL[lastLL] || {};
+  const ffD       = calcDeltas(allL,'gmv_ff');
+  const ffPctAll  = ll.gmv_total ? (ll.gmv_ff/ll.gmv_total)*100 : 0;
+  const xdPctAll  = ll.gmv_total ? (ll.gmv_xd/ll.gmv_total)*100 : 0;
+  const ssPctAll  = ll.gmv_total ? (ll.gmv_ss/ll.gmv_total)*100 : 0;
 
   document.getElementById('kpi-log').innerHTML =
-    kpiCard('%FF (GMV)',  fmtPct(ffPct), ffD.mom, ffD.yoy) +
-    kpiCard('GMV FF',    fmtBRL(l.gmv_ff||0), null, null) +
-    kpiCard('%XD (GMV)', fmtPct(xdPct), null, null) +
-    kpiCard('%SS (GMV)', fmtPct(ssPct), null, null);
+    kpiCard('%FF (GMV)',  fmtPct(ffPctAll), ffD.mom, ffD.yoy) +
+    kpiCard('GMV FF',    fmtBRL(ll.gmv_ff||0), null, null) +
+    kpiCard('%XD (GMV)', fmtPct(xdPctAll), null, null) +
+    kpiCard('%SS (GMV)', fmtPct(ssPctAll), null, null);
 
-  // Mix donut
+  // Mix donut (mês mais recente)
   makeChart('ch-log-mix','doughnut',
     ['Fulfillment','Cross Docking','Self Service'],
-    [{ data:[ffPct,xdPct,ssPct], backgroundColor:['#3483FA','#FFE600','#00A650'], borderWidth:0 }],
+    [{ data:[ffPctAll,xdPctAll,ssPctAll], backgroundColor:['#3483FA','#FFE600','#00A650'], borderWidth:0 }],
     { extra: { plugins:{ legend:{ display:true, position:'bottom' } } } });
 
-  // %FF line
-  const ffPerc = months.slice(-13).map(m => {
-    const d = monthly[m];
+  // Gráficos: ano corrente
+  const cyL       = aggregateCurrentYear(RAW.logistica_monthly, ['gmv_total','gmv_ff','si_ff','gmv_xd','si_xd','gmv_ss','si_ss']);
+  const cyLMonths = Object.keys(cyL).sort();
+
+  const ffPerc = cyLMonths.map(m => {
+    const d = cyL[m];
     return d?.gmv_total ? +((d.gmv_ff/d.gmv_total)*100).toFixed(1) : null;
   });
-  makeChart('ch-ff-mes','line', months.slice(-13),
+  makeChart('ch-ff-mes','line', cyLMonths,
     [{ label:'%FF', data:ffPerc, borderColor:'#3483FA', backgroundColor:'#3483FA22', fill:true, tension:.3, pointRadius:3 }],
     { yFmt: v => v?.toFixed(1)+'%' });
 
-  // GMV bars
-  makeChart('ch-log-gmv','bar', months.slice(-13), [
-    { label:'FF',  data:months.slice(-13).map(m=>monthly[m]?.gmv_ff||0), backgroundColor:'#3483FA', borderRadius:3 },
-    { label:'XD',  data:months.slice(-13).map(m=>monthly[m]?.gmv_xd||0), backgroundColor:'#FFE600', borderRadius:3 },
-    { label:'SS',  data:months.slice(-13).map(m=>monthly[m]?.gmv_ss||0), backgroundColor:'#00A650', borderRadius:3 },
+  makeChart('ch-log-gmv','bar', cyLMonths, [
+    { label:'FF',  data:cyLMonths.map(m=>cyL[m]?.gmv_ff||0), backgroundColor:'#3483FA', borderRadius:3 },
+    { label:'XD',  data:cyLMonths.map(m=>cyL[m]?.gmv_xd||0), backgroundColor:'#FFE600', borderRadius:3 },
+    { label:'SS',  data:cyLMonths.map(m=>cyL[m]?.gmv_ss||0), backgroundColor:'#00A650', borderRadius:3 },
   ], { extra: { scales: { x:{ stacked:true,grid:{display:false} }, y:{ stacked:true,grid:{color:'#F0F0F0'} } } } });
 
-  // SI bars
-  makeChart('ch-log-si','bar', months.slice(-13), [
-    { label:'FF',  data:months.slice(-13).map(m=>monthly[m]?.si_ff||0), backgroundColor:'#3483FA', borderRadius:3 },
-    { label:'XD',  data:months.slice(-13).map(m=>monthly[m]?.si_xd||0), backgroundColor:'#FFE600', borderRadius:3 },
-    { label:'SS',  data:months.slice(-13).map(m=>monthly[m]?.si_ss||0), backgroundColor:'#00A650', borderRadius:3 },
+  makeChart('ch-log-si','bar', cyLMonths, [
+    { label:'FF',  data:cyLMonths.map(m=>cyL[m]?.si_ff||0), backgroundColor:'#3483FA', borderRadius:3 },
+    { label:'XD',  data:cyLMonths.map(m=>cyL[m]?.si_xd||0), backgroundColor:'#FFE600', borderRadius:3 },
+    { label:'SS',  data:cyLMonths.map(m=>cyL[m]?.si_ss||0), backgroundColor:'#00A650', borderRadius:3 },
   ], { extra: { scales: { x:{ stacked:true,grid:{display:false} }, y:{ stacked:true,grid:{color:'#F0F0F0'} } } } });
 
   // Table
@@ -777,54 +814,56 @@ function renderLogistica() {
 
 // ── RENDER: ADS ───────────────────────────────────────────────────────────
 function renderAds() {
-  const monthly = aggregateByMonth(RAW.ads_monthly, ['gmv','ads_invest','gmv_ads']);
-  const months  = Object.keys(monthly).sort();
-  const last    = months[months.length-1] || '';
-  const l = monthly[last] || {};
-  const roas    = l.ads_invest ? +(l.gmv_ads / l.ads_invest).toFixed(2) : 0;
-  const adsPct  = l.gmv ? (l.ads_invest / l.gmv)*100 : 0;
-  const invD    = calcDeltas(monthly,'ads_invest');
-
-  // Take Rate: invest[month] / gmv[month-1]
-  const mIdx  = months.indexOf(last);
-  const prev  = months[mIdx-1];
-  const takeRate = (prev && monthly[prev]?.gmv)
-    ? (l.ads_invest / monthly[prev].gmv)*100 : null;
+  // KPIs com todos os meses para YoY/MoM
+  const allA   = aggregateAllMonths(RAW.ads_monthly, ['gmv','ads_invest','gmv_ads']);
+  const allAM  = Object.keys(allA).sort();
+  const lastA  = allAM[allAM.length-1] || '';
+  const la     = allA[lastA] || {};
+  const roas   = la.ads_invest ? +(la.gmv_ads / la.ads_invest).toFixed(2) : 0;
+  const adsPct = la.gmv ? (la.ads_invest / la.gmv)*100 : 0;
+  const invD   = calcDeltas(allA,'ads_invest');
+  const prevA  = allAM[allAM.length-2];
+  const takeRate = (prevA && allA[prevA]?.gmv)
+    ? (la.ads_invest / allA[prevA].gmv)*100 : null;
 
   document.getElementById('kpi-ads').innerHTML =
-    kpiCard('Investimento ADS', fmtBRL(l.ads_invest||0), invD.mom, invD.yoy) +
+    kpiCard('Investimento ADS', fmtBRL(la.ads_invest||0), invD.mom, invD.yoy) +
     kpiCard('ROAS',             fmtDec(roas), null, null) +
     kpiCard('ADS/GMV%',        fmtPct(adsPct), null, null) +
     kpiCard('Take Rate ADS',   fmtPct(takeRate), null, null);
 
-  makeChart('ch-ads-invest','bar', months.slice(-13),
-    [{ label:'Investimento ADS', data:months.slice(-13).map(m=>monthly[m]?.ads_invest||0),
+  // Gráficos: ano corrente
+  const cyA       = aggregateCurrentYear(RAW.ads_monthly, ['gmv','ads_invest','gmv_ads']);
+  const cyAMonths = Object.keys(cyA).sort();
+
+  makeChart('ch-ads-invest','bar', cyAMonths,
+    [{ label:'Investimento ADS', data:cyAMonths.map(m=>cyA[m]?.ads_invest||0),
        backgroundColor:'#9B59B6', borderRadius:4 }],
     { yFmt: v => 'R$'+v.toLocaleString('pt-BR',{notation:'compact'}) });
 
-  const roasData = months.slice(-13).map(m => {
-    const d = monthly[m];
+  const roasData = cyAMonths.map(m => {
+    const d = cyA[m];
     return d?.ads_invest ? +(d.gmv_ads/d.ads_invest).toFixed(2) : null;
   });
-  makeChart('ch-roas','line', months.slice(-13),
+  makeChart('ch-roas','line', cyAMonths,
     [{ label:'ROAS', data:roasData, borderColor:'#1ABC9C', backgroundColor:'#1ABC9C22', fill:true, tension:.3, pointRadius:3 }]);
 
-  const adsPctData = months.slice(-13).map(m => {
-    const d = monthly[m];
+  const adsPctData = cyAMonths.map(m => {
+    const d = cyA[m];
     return d?.gmv ? +((d.ads_invest/d.gmv)*100).toFixed(2) : null;
   });
-  makeChart('ch-ads-perc','line', months.slice(-13),
+  makeChart('ch-ads-perc','line', cyAMonths,
     [{ label:'ADS/GMV%', data:adsPctData, borderColor:'#E83C49', backgroundColor:'#E83C4922', fill:true, tension:.3, pointRadius:3 }],
     { yFmt: v => v?.toFixed(1)+'%' });
 
-  const takeData = months.slice(-13).map((m,i) => {
+  const takeData = cyAMonths.map((m,i) => {
     if (i===0) return null;
-    const prev = months[months.indexOf(m)-1];
-    const gPrev = monthly[prev]?.gmv || 0;
-    const iCurr = monthly[m]?.ads_invest || 0;
+    const prev = allAM[allAM.indexOf(m)-1];
+    const gPrev = allA[prev]?.gmv || 0;
+    const iCurr = cyA[m]?.ads_invest || 0;
     return gPrev ? +((iCurr/gPrev)*100).toFixed(2) : null;
   });
-  makeChart('ch-take-rate','line', months.slice(-13),
+  makeChart('ch-take-rate','line', cyAMonths,
     [{ label:'Take Rate %', data:takeData, borderColor:'#FF7733', backgroundColor:'#FF773322', fill:true, tension:.3, pointRadius:3 }],
     { yFmt: v => v?.toFixed(1)+'%' });
 
@@ -848,39 +887,43 @@ function renderAds() {
 
 // ── RENDER: Investimentos ─────────────────────────────────────────────────
 function renderInvestimentos() {
-  const monthly = aggregateByMonth(RAW.investimentos_monthly, ['gmv','cupons','rebate_pre','rebate_outras','total_invest']);
-  const months  = Object.keys(monthly).sort();
-  const last    = months[months.length-1] || '';
-  const l = monthly[last] || {};
-  const td = calcDeltas(monthly,'total_invest');
+  // KPIs com todos os meses para YoY/MoM
+  const allI   = aggregateAllMonths(RAW.investimentos_monthly, ['gmv','cupons','rebate_pre','rebate_outras','total_invest']);
+  const allIM  = Object.keys(allI).sort();
+  const lastI  = allIM[allIM.length-1] || '';
+  const li     = allI[lastI] || {};
+  const td     = calcDeltas(allI,'total_invest');
 
   document.getElementById('kpi-inv').innerHTML =
-    kpiCard('Total Investido', fmtBRL(l.total_invest||0), td.mom, td.yoy) +
-    kpiCard('Cupons',          fmtBRL(l.cupons||0), null, null) +
-    kpiCard('Rebate Pré-neg.', fmtBRL(l.rebate_pre||0), null, null) +
-    kpiCard('Rebate Outras',   fmtBRL(l.rebate_outras||0), null, null);
+    kpiCard('Total Investido', fmtBRL(li.total_invest||0), td.mom, td.yoy) +
+    kpiCard('Cupons',          fmtBRL(li.cupons||0), null, null) +
+    kpiCard('Rebate Pré-neg.', fmtBRL(li.rebate_pre||0), null, null) +
+    kpiCard('Rebate Outras',   fmtBRL(li.rebate_outras||0), null, null);
 
-  makeChart('ch-inv-total','bar', months.slice(-13), [
-    { label:'Cupons',        data:months.slice(-13).map(m=>monthly[m]?.cupons||0),       backgroundColor:'#FFE600', borderRadius:3 },
-    { label:'Rebate Pré',    data:months.slice(-13).map(m=>monthly[m]?.rebate_pre||0),   backgroundColor:'#3483FA', borderRadius:3 },
-    { label:'Rebate Outras', data:months.slice(-13).map(m=>monthly[m]?.rebate_outras||0),backgroundColor:'#00A650', borderRadius:3 },
+  // Gráficos: ano corrente
+  const cyI       = aggregateCurrentYear(RAW.investimentos_monthly, ['gmv','cupons','rebate_pre','rebate_outras','total_invest']);
+  const cyIMonths = Object.keys(cyI).sort();
+
+  makeChart('ch-inv-total','bar', cyIMonths, [
+    { label:'Cupons',        data:cyIMonths.map(m=>cyI[m]?.cupons||0),       backgroundColor:'#FFE600', borderRadius:3 },
+    { label:'Rebate Pré',    data:cyIMonths.map(m=>cyI[m]?.rebate_pre||0),   backgroundColor:'#3483FA', borderRadius:3 },
+    { label:'Rebate Outras', data:cyIMonths.map(m=>cyI[m]?.rebate_outras||0),backgroundColor:'#00A650', borderRadius:3 },
   ], { extra: { scales:{ x:{stacked:true,grid:{display:false}},y:{stacked:true,grid:{color:'#F0F0F0'}} } } });
 
-  const tot = (l.cupons||0)+(l.rebate_pre||0)+(l.rebate_outras||0) || 1;
   makeChart('ch-inv-mix','doughnut',
     ['Cupons','Rebate Pré-neg.','Rebate Outras'],
-    [{ data:[l.cupons||0, l.rebate_pre||0, l.rebate_outras||0],
+    [{ data:[li.cupons||0, li.rebate_pre||0, li.rebate_outras||0],
        backgroundColor:['#FFE600','#3483FA','#00A650'], borderWidth:0 }],
     { extra:{ plugins:{ legend:{ display:true,position:'bottom' } } } });
 
-  makeChart('ch-cupons','line', months.slice(-13),
-    [{ label:'Cupons', data:months.slice(-13).map(m=>monthly[m]?.cupons||0),
+  makeChart('ch-cupons','line', cyIMonths,
+    [{ label:'Cupons', data:cyIMonths.map(m=>cyI[m]?.cupons||0),
        borderColor:'#FFE600', backgroundColor:'#FFE60022', fill:true, tension:.3, pointRadius:3 }],
     { yFmt: v => 'R$'+v.toLocaleString('pt-BR',{notation:'compact'}) });
 
-  makeChart('ch-rebates','line', months.slice(-13), [
-    { label:'Pré-neg.',    data:months.slice(-13).map(m=>monthly[m]?.rebate_pre||0),   borderColor:'#3483FA', backgroundColor:'#3483FA22', fill:false, tension:.3, pointRadius:3 },
-    { label:'Outras',      data:months.slice(-13).map(m=>monthly[m]?.rebate_outras||0),borderColor:'#00A650', backgroundColor:'#00A65022', fill:false, tension:.3, pointRadius:3 },
+  makeChart('ch-rebates','line', cyIMonths, [
+    { label:'Pré-neg.',    data:cyIMonths.map(m=>cyI[m]?.rebate_pre||0),   borderColor:'#3483FA', backgroundColor:'#3483FA22', fill:false, tension:.3, pointRadius:3 },
+    { label:'Outras',      data:cyIMonths.map(m=>cyI[m]?.rebate_outras||0),borderColor:'#00A650', backgroundColor:'#00A65022', fill:false, tension:.3, pointRadius:3 },
   ], { yFmt: v => 'R$'+v.toLocaleString('pt-BR',{notation:'compact'}) });
 
   const byS = groupBySeller(
