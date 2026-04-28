@@ -10,6 +10,7 @@ import subprocess
 import sys
 from datetime import date, datetime
 from decimal import Decimal
+import time
 from google.cloud import bigquery
 
 # Ensure UTF-8 output on Windows
@@ -42,8 +43,9 @@ client = bigquery.Client(project=PROJECT)
 
 
 # ── Query helpers ────────────────────────────────────────────────────────────
-def run(sql: str) -> list[dict]:
-    rows = list(client.query(sql).result())
+def run(sql: str) -> list[dict]:
+    time.sleep(3)
+    rows = list(client.query(sql).result())
     return [dict(r) for r in rows]
 
 
@@ -128,15 +130,18 @@ def q_ads_daily():
 
 
 def q_investimentos_daily():
-    """Investimentos por seller por dia - ultimos 90 dias."""
+    """Investimentos 3 grupos por seller por dia - ultimos 90 dias."""
     return run(f"""
         SELECT
-            CAST(ORD_CLOSED_DT AS STRING)          AS dia,
-            CUS_CUST_ID_SEL                        AS cust_id,
-            ROUND(SUM(CPN_AMOUNT_LC),2)            AS cupons,
-            ROUND(SUM(REBATES_MANUAIS_LC),2)       AS rebate_pre,
-            ROUND(SUM(CP_INVESTMENTS_LC),2)        AS rebate_outras,
-            ROUND(SUM(TOTAL_INVESTMENTS_LC),2)     AS total_invest
+            CAST(ORD_CLOSED_DT AS STRING)   AS dia,
+            CUS_CUST_ID_SEL                 AS cust_id,
+            ROUND(SUM(CASE WHEN DXI_CAMPAIGN_SUBTYPE = 'PRE_ACORDO' THEN COALESCE(DXI_INVESTMENT_LC,0) ELSE 0 END),2) AS g1_pre_acordo,
+            ROUND(SUM(COALESCE(DOD_INVESTMENT_LC,0)),2)        AS g1_dod,
+            ROUND(SUM(COALESCE(LIGHTNING_INVESTMENT_LC,0)),2)  AS g1_relampago,
+            ROUND(SUM(CASE WHEN PRICING_MATCHING_FLG = TRUE THEN COALESCE(DXI_INVESTMENT_LC,0) ELSE 0 END),2) AS g2_price_matching,
+            ROUND(SUM(CASE WHEN SMART_CAMPAIGN_FLG   = TRUE THEN COALESCE(DXI_INVESTMENT_LC,0) ELSE 0 END),2) AS g2_smart,
+            ROUND(SUM(COALESCE(AUTOMATIC_CAMPAIGN_INVESTMENT_LC,0)),2) AS g2_automaticas,
+            ROUND(SUM(CASE WHEN CPN_SELLER_FLG = FALSE THEN COALESCE(CPN_AMOUNT_LC,0) ELSE 0 END),2) AS g3_cupons_ml
         FROM {TABLE}
         WHERE CUS_CUST_ID_SEL IN ({IDS_STR})
           AND GMV_FLG = TRUE
@@ -146,7 +151,6 @@ def q_investimentos_daily():
         ORDER BY 1, 2
     """)
 
-
 def q_logistica_monthly():
     """Logística por tipo por seller por mês."""
     ff   = "', '".join(FF_TYPES)
@@ -193,25 +197,31 @@ def q_ads_monthly():
     """)
 
 
-def q_investimentos_monthly():
-    """Cupons + Rebate pré-negociado + Rebate outras frentes por seller por mês."""
-    return run(f"""
-        SELECT
-            FORMAT_DATE('%Y-%m', ORD_CLOSED_DT)           AS mes,
-            CUS_CUST_ID_SEL                                AS cust_id,
-            ROUND(SUM(GMV_LC), 2)                          AS gmv,
-            ROUND(SUM(CPN_AMOUNT_LC), 2)                   AS cupons,
-            ROUND(SUM(REBATES_MANUAIS_LC), 2)              AS rebate_pre,
-            ROUND(SUM(CP_INVESTMENTS_LC), 2)               AS rebate_outras,
-            ROUND(SUM(TOTAL_INVESTMENTS_LC), 2)            AS total_invest
-        FROM {TABLE}
-        WHERE CUS_CUST_ID_SEL IN ({IDS_STR})
-          AND GMV_FLG = TRUE
-          AND ORD_CLOSED_DT >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 YEAR), YEAR)
-          AND ORD_CLOSED_DT < CURRENT_DATE()
-        GROUP BY 1, 2
-        ORDER BY 1, 2
-    """)
+def q_investimentos_monthly():
+    """Investimentos em 3 grupos por seller por mes."""
+    return run(f"""
+        SELECT
+            FORMAT_DATE('%Y-%m', ORD_CLOSED_DT)   AS mes,
+            CUS_CUST_ID_SEL                        AS cust_id,
+            ROUND(SUM(GMV_LC), 2)                  AS gmv,
+            -- Grupo 1: Comercial (Pandora)
+            ROUND(SUM(CASE WHEN DXI_CAMPAIGN_SUBTYPE = 'PRE_ACORDO' THEN COALESCE(DXI_INVESTMENT_LC,0) ELSE 0 END),2) AS g1_pre_acordo,
+            ROUND(SUM(COALESCE(DOD_INVESTMENT_LC,0)),2)        AS g1_dod,
+            ROUND(SUM(COALESCE(LIGHTNING_INVESTMENT_LC,0)),2)  AS g1_relampago,
+            -- Grupo 2: Central de Promocoes
+            ROUND(SUM(CASE WHEN PRICING_MATCHING_FLG = TRUE THEN COALESCE(DXI_INVESTMENT_LC,0) ELSE 0 END),2) AS g2_price_matching,
+            ROUND(SUM(CASE WHEN SMART_CAMPAIGN_FLG   = TRUE THEN COALESCE(DXI_INVESTMENT_LC,0) ELSE 0 END),2) AS g2_smart,
+            ROUND(SUM(COALESCE(AUTOMATIC_CAMPAIGN_INVESTMENT_LC,0)),2) AS g2_automaticas,
+            -- Grupo 3: Cupons ML
+            ROUND(SUM(CASE WHEN CPN_SELLER_FLG = FALSE THEN COALESCE(CPN_AMOUNT_LC,0) ELSE 0 END),2) AS g3_cupons_ml
+        FROM {TABLE}
+        WHERE CUS_CUST_ID_SEL IN ({IDS_STR})
+          AND GMV_FLG = TRUE
+          AND ORD_CLOSED_DT >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 YEAR), YEAR)
+          AND ORD_CLOSED_DT < CURRENT_DATE()
+        GROUP BY 1, 2
+        ORDER BY 1, 2
+    """)
 
 
 def q_buybox_monthly():
@@ -254,6 +264,175 @@ def q_catalogo_top_items():
         QUALIFY ROW_NUMBER() OVER (PARTITION BY CUS_CUST_ID_SEL ORDER BY SUM(GMV_LC) DESC) <= 20
         ORDER BY 1, 4 DESC
     """)
+
+
+def q_seller_reputation():
+    """Reputacao atual dos sellers da carteira."""
+    return run(f"""
+        SELECT
+            CUS_CUST_ID_SEL                                AS cust_id,
+            REP_CURRENT_LEVEL,
+            REP_REAL_LEVEL,
+            ROUND(REP_CLAIMS_RATE*100, 2)                  AS claims_pct,
+            ROUND(REP_DELAYED_HT_RATE*100, 2)              AS delay_pct,
+            ROUND(REP_SELLER_CANCELLATIONS_RATE*100, 2)    AS cancel_pct,
+            CAST(REP_3_MTH_TX AS INT64)                    AS orders_3m
+        FROM `meli-bi-data.WHOWNER.BT_REP_SELLER_REPUTATION`
+        WHERE SIT_SITE_ID = 'MLB'
+          AND CUS_CUST_ID_SEL IN ({IDS_STR})
+    """)
+
+
+def q_visitas_monthly():
+    """Visitas por seller por mes -- BT_VISITS_ITEM."""
+    return run(f"""
+        SELECT
+            FORMAT_DATE('%Y-%m', TIM_DAY)   AS mes,
+            CUS_CUST_ID_SEL                 AS cust_id,
+            SUM(QTY_VISITS)                 AS visits,
+            SUM(QTY_VISITS_VIP)             AS visits_vip
+        FROM `meli-bi-data.WHOWNER.BT_VISITS_ITEM`
+        WHERE SIT_SITE_ID = 'MLB'
+          AND CUS_CUST_ID_SEL IN ({IDS_STR})
+          AND TIM_DAY >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 YEAR), YEAR)
+          AND TIM_DAY < CURRENT_DATE()
+        GROUP BY 1, 2
+        ORDER BY 1, 2
+    """)
+
+
+def q_visitas_daily():
+    """Visitas por seller por dia -- ultimos 90 dias."""
+    return run(f"""
+        SELECT
+            CAST(TIM_DAY AS STRING)         AS dia,
+            CUS_CUST_ID_SEL                 AS cust_id,
+            SUM(QTY_VISITS)                 AS visits
+        FROM `meli-bi-data.WHOWNER.BT_VISITS_ITEM`
+        WHERE SIT_SITE_ID = 'MLB'
+          AND CUS_CUST_ID_SEL IN ({IDS_STR})
+          AND TIM_DAY >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
+          AND TIM_DAY < CURRENT_DATE()
+        GROUP BY 1, 2
+        ORDER BY 1, 2
+    """)
+
+
+def q_visitas_items():
+    """Top 50 itens por visitas por seller -- ultimos 90 dias."""
+    return run(f"""
+        SELECT
+            CUS_CUST_ID_SEL                 AS cust_id,
+            ITE_ITEM_ID                     AS item_id,
+            SUM(QTY_VISITS)                 AS visits,
+            SUM(QTY_VISITS_VIP)             AS visits_vip
+        FROM `meli-bi-data.WHOWNER.BT_VISITS_ITEM`
+        WHERE SIT_SITE_ID = 'MLB'
+          AND CUS_CUST_ID_SEL IN ({IDS_STR})
+          AND TIM_DAY >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
+          AND TIM_DAY < CURRENT_DATE()
+        GROUP BY 1, 2
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY CUS_CUST_ID_SEL ORDER BY SUM(QTY_VISITS) DESC) <= 50
+        ORDER BY 1, 3 DESC
+    """)
+
+
+def q_bpc_aurora():
+    """BPC e Aurora: competitividade de preco por item -- BT_COM_FAVORABILITY + LK_PRICING_TOOLS_BPC_AURORA_ITEMS_AUDIT."""
+    ids_q = "'383523670','794123311','568773774','70123968','2355501248','638325656','1802758219','700583148'"
+    return run(f"""
+        WITH last_day AS (
+            SELECT MAX(TIM_DAY) AS max_day
+            FROM `meli-bi-data.WHOWNER.BT_COM_FAVORABILITY`
+            WHERE FAVORABILITY_TYPE = 'BOX_MATCH_SELLER' AND SIT_SITE_ID = 'MLB'
+              AND FLG_BULKY = 'false' AND TIM_DAY >= CURRENT_DATE() - 15
+        ),
+        bpc AS (
+            SELECT CAST(H.CUS_CUST_ID_SEL AS STRING) AS SELLER_ID,
+                CAST(H.MELI_ID AS STRING) AS MELI_ID,
+                ROUND(SUM(H.VISITS_MATCH), 2) AS VISITS_MATCH,
+                ROUND(SUM(CASE WHEN H.PRICE_MELI > 0 AND H.COMP_PRICE_RIVAL > 0
+                                AND H.PRICE_MELI > 1.03 * H.COMP_PRICE_RIVAL
+                               THEN H.VISITS_MATCH ELSE 0 END), 2) AS VISITS_EXP3
+            FROM `meli-bi-data.WHOWNER.BT_COM_FAVORABILITY` AS H
+            WHERE H.FAVORABILITY_TYPE = 'BOX_MATCH_SELLER' AND H.SIT_SITE_ID = 'MLB'
+              AND H.FLG_BULKY = 'false' AND H.TIM_DAY >= CURRENT_DATE() - 15
+              AND CAST(H.CUS_CUST_ID_SEL AS STRING) IN ({ids_q})
+            GROUP BY 1, 2 HAVING SUM(H.VISITS_MATCH) > 0
+        ),
+        items_last_day AS (
+            SELECT CAST(H.CUS_CUST_ID_SEL AS STRING) AS SELLER_ID,
+                CAST(H.MELI_ID AS STRING) AS MELI_ID,
+                CAST(H.ITE_ITEM_ID AS STRING) AS ITE_ITEM_ID,
+                H.PRICE_MELI, H.COMP_PRICE_RIVAL,
+                H.COMP_RIVAL_NAME_WINNER AS COMP_RIVAL_NAME,
+                H.COMP_URL_WINNER AS COMP_URL, H.PERMALINK, H.TITLE,
+                ROW_NUMBER() OVER (
+                    PARTITION BY H.CUS_CUST_ID_SEL, H.MELI_ID, H.ITE_ITEM_ID
+                    ORDER BY H.COMP_PRICE_RIVAL ASC
+                ) AS rn
+            FROM `meli-bi-data.WHOWNER.BT_COM_FAVORABILITY` H
+            CROSS JOIN last_day
+            WHERE H.FAVORABILITY_TYPE = 'BOX_MATCH_SELLER' AND H.SIT_SITE_ID = 'MLB'
+              AND H.FLG_BULKY = 'false' AND H.TIM_DAY = last_day.max_day
+              AND CAST(H.CUS_CUST_ID_SEL AS STRING) IN ({ids_q})
+        ),
+        audit_items AS (
+            SELECT CAST(VALUE.SELLER_ID AS STRING) AS SELLER_ID,
+                VALUE.ITEM_ID AS ITEM_ID, VALUE.ITEM_PRICE AS PRICE_MELI,
+                VALUE.TARGET_PRICE, VALUE.COMP_RIVAL_NAME, VALUE.COMP_URL,
+                VALUE.PERMALINK, VALUE.IS_OFFENDER, VALUE.SELLER_QUALIFICATION
+            FROM `meli-bi-data.WHOWNER.LK_PRICING_TOOLS_BPC_AURORA_ITEMS_AUDIT`
+            WHERE DATE(ARRIVAL_DATE) >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
+              AND CAST(VALUE.SELLER_ID AS STRING) IN ({ids_q})
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY VALUE.ITEM_ID, VALUE.SELLER_ID ORDER BY ARRIVAL_DATE DESC
+            ) = 1
+        )
+        SELECT b.SELLER_ID, i.ITE_ITEM_ID, b.VISITS_MATCH, b.VISITS_EXP3,
+            COALESCE(a.PRICE_MELI, i.PRICE_MELI)             AS PRICE_MELI,
+            COALESCE(a.TARGET_PRICE, i.COMP_PRICE_RIVAL)     AS COMP_PRICE_RIVAL_MIN,
+            COALESCE(a.COMP_RIVAL_NAME, i.COMP_RIVAL_NAME)   AS COMP_RIVAL_NAME,
+            COALESCE(a.COMP_URL, i.COMP_URL)                  AS COMP_URL,
+            COALESCE(a.PERMALINK, i.PERMALINK)                AS PERMALINK,
+            i.TITLE, a.SELLER_QUALIFICATION,
+            CASE WHEN COALESCE(a.PRICE_MELI, i.PRICE_MELI) > 0
+                  AND COALESCE(a.TARGET_PRICE, i.COMP_PRICE_RIVAL) > 0
+                  AND COALESCE(a.PRICE_MELI, i.PRICE_MELI) > 1.03 * COALESCE(a.TARGET_PRICE, i.COMP_PRICE_RIVAL)
+                 THEN 'Nao Competitivo' ELSE 'Competitivo' END AS CLASSIFICACAO
+        FROM bpc b
+        JOIN items_last_day i ON b.SELLER_ID = i.SELLER_ID AND b.MELI_ID = i.MELI_ID AND i.rn = 1
+        LEFT JOIN audit_items a
+            ON CONCAT('MLB', i.ITE_ITEM_ID) = a.ITEM_ID AND b.SELLER_ID = a.SELLER_ID
+        ORDER BY b.SELLER_ID, b.VISITS_EXP3 DESC
+        LIMIT 500
+    """)
+
+
+def q_campanhas():
+    """Campanhas por item/seller -- LK_MKP_CAMPAIGN_ITEM_OPTIN + LK_MKP_CAMPAIGNS_ELEGIBLE_ITEMS."""
+    return run(f"""
+        SELECT
+            o.TYPE                         AS tipo,
+            o.DS                           AS data,
+            o.CUS_CUST_ID_SEL             AS cust_id,
+            o.ITE_ITEM_ID                  AS item_id,
+            o.ITEM_CANDIDATE_FLG           AS elegivel,
+            o.ITEM_WITH_OFFER_FLG          AS opt_in,
+            ROUND(e.ITE_CAM_FIRST_TAG_PRICE, 2) AS preco_inicial,
+            ROUND(e.ITE_CAM_TAG_PRICE, 2)  AS preco_final,
+            e.ITE_CAM_TAG_STATUS           AS status_campanha,
+            ROUND(o.ITEM_TGMV_L30D, 2)    AS gmv_l30d
+        FROM `meli-bi-data.WHOWNER.LK_MKP_CAMPAIGN_ITEM_OPTIN` o
+        LEFT JOIN `meli-bi-data.WHOWNER.LK_MKP_CAMPAIGNS_ELEGIBLE_ITEMS` e
+            ON o.PROMOTION_ID = e.CAM_CAMPAIGN_ID AND o.ITE_ITEM_ID = e.ITE_ITEM_ID
+        WHERE o.SIT_SITE_ID = 'MLB'
+          AND o.CUS_CUST_ID_SEL IN ({IDS_STR})
+          AND o.DS >= DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY)
+        ORDER BY o.CUS_CUST_ID_SEL, o.DS DESC, o.TYPE, o.ITE_ITEM_ID
+        LIMIT 10000
+    """)
+
 
 
 # ── Data assembly ────────────────────────────────────────────────────────────
@@ -278,7 +457,19 @@ def build_dataset() -> dict:
     print("  → BuyBox...")
     bb_m     = q_buybox_monthly()
     print("  → Catálogo top itens...")
-    cat      = q_catalogo_top_items()
+    cat      = q_catalogo_top_items()
+    print("  -> Reputacao sellers...")
+    rep      = q_seller_reputation()
+    print("  -> Visitas mensal...")
+    vis_m    = q_visitas_monthly()
+    print("  -> Visitas diario...")
+    vis_d    = q_visitas_daily()
+    print("  -> Visitas por item...")
+    vis_i    = q_visitas_items()
+    print("  -> BPC e Aurora...")
+    bpc      = q_bpc_aurora()
+    print("  -> Campanhas...")
+    camp     = q_campanhas()
     print("  Consultas concluídas.")
 
     # Convert date/Decimal to serialisable types
@@ -309,8 +500,14 @@ def build_dataset() -> dict:
         "investimentos_monthly": clean_rows(inv_m),
         "investimentos_daily": clean_rows(inv_d),
         "buybox_monthly":      clean_rows(bb_m),
-        "catalogo_items":      clean_rows(cat),
-    }
+        "catalogo_items":      clean_rows(cat),
+        "seller_reputation":   clean_rows(rep),
+        "visitas_monthly":     clean_rows(vis_m),
+        "visitas_daily":       clean_rows(vis_d),
+        "visitas_items":       clean_rows(vis_i),
+        "bpc_aurora":          clean_rows(bpc),
+        "campanhas":           clean_rows(camp),
+    }
 
 
 
@@ -324,7 +521,7 @@ HTML_TEMPLATE = """\
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Dashboard MeliPro \u2014 Lucas Sanches</title>
+<title>Dashboard MeliPro | Lucas Sanches</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
 :root{
@@ -415,7 +612,7 @@ td:first-child{text-align:left;font-weight:500}
 <body>
 <div class="header">
   <img class="logo" src="data:image/png;base64,__LOGO__" alt="Mercado Livre">
-  <div><div class="header-title">Dashboard MeliPro \u2014 Lucas Sanches</div>
+  <div><div class="header-title">Dashboard MeliPro | Lucas Sanches</div>
   <div class="header-sub">Vis\u00e3o 360\u00b0 da Carteira</div></div>
   <div class="updated" id="updated-at"></div>
 </div>
@@ -452,12 +649,18 @@ td:first-child{text-align:left;font-weight:500}
       <div class="tab" onclick="setTab('logistica',this)">Fulfillment &amp; Log\u00edstica</div>
       <div class="tab" onclick="setTab('ads',this)">ADS</div>
       <div class="tab" onclick="setTab('investimentos',this)">Investimentos</div>
-      <div class="tab" onclick="setTab('catalogo',this)">Cat\u00e1logo</div>
-    </div>
+      <div class="tab" onclick="setTab('catalogo',this)">Cat\u00e1logo</div>
+      <div class="tab" onclick="setTab('visitas',this)">Visitas &amp; Convers\u00e3o</div>
+      <div class="tab" onclick="setTab('campanhas',this)">Campanhas</div>
+      <div class="tab" onclick="setTab('bpc',this)">BPC</div>
+      <div class="tab" onclick="setTab('aurora',this)">Plano Aurora</div>
+    </div>
     <div class="main-content">
-      <div class="tab-content active" id="tab-geral">
-        <div id="period-badge-geral" class="period-badge"></div>
-        <div class="kpi-grid" id="kpi-geral"></div>
+      <div class="tab-content active" id="tab-geral">
+        <div id="period-badge-geral" class="period-badge"></div>
+        <div class="section-title">Scorecard por Seller</div>
+        <div class="scorecard-grid" id="scorecard-sellers"></div>
+        <div class="kpi-grid" id="kpi-geral"></div>
         <div class="chart-grid">
           <div class="chart-card"><div class="chart-title">GMV (R$)</div><div class="chart-wrap"><canvas id="ch-gmv-mes"></canvas></div></div>
           <div class="chart-card"><div class="chart-title">Varia\u00e7\u00e3o GMV \u2014 MoM vs YoY (%)</div><div class="chart-wrap"><canvas id="ch-gmv-delta"></canvas></div></div>
@@ -506,10 +709,41 @@ td:first-child{text-align:left;font-weight:500}
       </div>
       <div class="tab-content" id="tab-catalogo">
         <div class="section-title">Top It\u00eans por Seller \u2014 \u00daltimos 3 meses</div>
-        <div class="table-wrap"><table id="tbl-catalogo"></table></div>
-      </div>
-    </div>
-  </div>
+        <div class="table-wrap"><table id="tbl-catalogo"></table></div>
+      </div>
+      <div class="tab-content" id="tab-visitas">
+        <div id="period-badge-visitas" class="period-badge"></div>
+        <div class="kpi-grid" id="kpi-visitas"></div>
+        <div class="chart-grid">
+          <div class="chart-card"><div class="chart-title">Visitas Mensais</div><div class="chart-wrap"><canvas id="ch-vis-mes"></canvas></div></div>
+          <div class="chart-card"><div class="chart-title">Conversão (%)</div><div class="chart-wrap"><canvas id="ch-conv-mes"></canvas></div></div>
+        </div>
+        <div class="section-title">Visitas por Seller</div>
+        <div class="table-wrap"><table id="tbl-visitas-sellers"></table></div>
+        <div class="section-title">Top Itêns por Visitas (90 dias)</div>
+        <div class="table-wrap"><table id="tbl-visitas-items"></table></div>
+      </div>
+      <div class="tab-content" id="tab-campanhas">
+        <div class="section-title">Resumo por Seller</div>
+        <div class="table-wrap"><table id="tbl-camp-sellers"></table></div>
+        <div class="section-title">Campanhas por Item (últimos 2 dias)</div>
+        <div class="table-wrap"><table id="tbl-camp-items"></table></div>
+      </div>
+      <div class="tab-content" id="tab-bpc">
+        <div class="kpi-grid" id="kpi-bpc"></div>
+        <div class="section-title">BPC por Seller</div>
+        <div class="table-wrap"><table id="tbl-bpc-sellers"></table></div>
+        <div class="section-title">Itêns Não Competitivos (15 dias)</div>
+        <div class="table-wrap"><table id="tbl-bpc-items"></table></div>
+      </div>
+      <div class="tab-content" id="tab-aurora">
+        <div class="section-title">Classificação Aurora por Seller</div>
+        <div class="table-wrap"><table id="tbl-aurora-sellers"></table></div>
+        <div class="section-title">Itêns não competitivos</div>
+        <div class="table-wrap"><table id="tbl-aurora-items"></table></div>
+      </div>
+    </div>
+  </div>
 </div>
 <script>
 const RAW = __DATA_PLACEHOLDER__;
@@ -771,6 +1005,7 @@ function makeChart(id,type,labels,datasets,opts={}){
 }
 
 function renderGeral(){
+  renderScorecard();
   var pc=getPeriodConfig(),allM=aggAllMonths(RAW.geral_monthly,['gmv','si']);
   setBadge('period-badge-geral',pc);
   var gmv=computeKPI(pc,allM,'gmv'),si=computeKPI(pc,allM,'si');
@@ -959,18 +1194,22 @@ function renderAds(){
   document.getElementById('tbl-ads-sellers').innerHTML=h+'</tbody>';
 }
 function renderInvestimentos(){
-  var pc=getPeriodConfig(),allM=aggAllMonths(RAW.investimentos_monthly,['gmv','cupons','rebate_pre','rebate_outras','total_invest']);
+  var pc=getPeriodConfig();
+  var INV_FIELDS=['g1_pre_acordo','g1_dod','g1_relampago','g2_price_matching','g2_smart','g2_automaticas','g3_cupons_ml'];
+  var allM=aggAllMonths(RAW.investimentos_monthly,INV_FIELDS);
   setBadge('period-badge-inv',pc);
   var meses=pc.gran==='daily'?(pc.currM||[]):(pc.curr||[]);
-  var invK=computeKPI(pc,allM,'total_invest');
-  var li={cupons:sumMeses(allM,meses,'cupons'),rebate_pre:sumMeses(allM,meses,'rebate_pre'),rebate_outras:sumMeses(allM,meses,'rebate_outras'),total_invest:invK.value};
+  var g1=sumMeses(allM,meses,'g1_pre_acordo')+sumMeses(allM,meses,'g1_dod')+sumMeses(allM,meses,'g1_relampago');
+  var g2=sumMeses(allM,meses,'g2_price_matching')+sumMeses(allM,meses,'g2_smart')+sumMeses(allM,meses,'g2_automaticas');
+  var g3=sumMeses(allM,meses,'g3_cupons_ml');
+  var invTotal=g1+g2+g3;
   document.getElementById('kpi-inv').innerHTML=
-    kpiCard('Total Investido',fmtBRL(li.total_invest),pc,invK.d1,invK.d2)+
-    '<div class="kpi-card"><div class="kpi-label">Cupons</div><div class="kpi-value">'+fmtBRL(li.cupons)+'</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>'+
-    '<div class="kpi-card"><div class="kpi-label">Rebate Pr\u00e9-neg.</div><div class="kpi-value">'+fmtBRL(li.rebate_pre)+'</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>'+
-    '<div class="kpi-card"><div class="kpi-label">Rebate Outras</div><div class="kpi-value">'+fmtBRL(li.rebate_outras)+'</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>';
-
-  // CHARTS: daily for day/week/month, monthly for quarter/year
+    '<div class="kpi-card"><div class="kpi-label">Total Investido</div><div class="kpi-value">'+ fmtBRL(invTotal) +'</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>'+
+    '<div class="kpi-card"><div class="kpi-label">G1 Comercial (Pandora)</div><div class="kpi-value">'+ fmtBRL(g1) +'</div><div class="kpi-delta"><span class="dn0">Pr\u00e9 Acordo + DoD + Rel\u00e2mpago</span></div></div>'+
+    '<div class="kpi-card"><div class="kpi-label">G2 Central Promo\u00e7\u00f5es</div><div class="kpi-value">'+ fmtBRL(g2) +'</div><div class="kpi-delta"><span class="dn0">PM + Smart + Autom\u00e1ticas</span></div></div>'+
+    '<div class="kpi-card"><div class="kpi-label">G3 Cupons ML</div><div class="kpi-value">'+ fmtBRL(g3) +'</div><div class="kpi-delta"><span class="dn0">CPN_SELLER_FLG=FALSE</span></div></div>';
+  var cyI=aggCurrentYear(RAW.investimentos_monthly,INV_FIELDS),cym=Object.keys(cyI).sort();
+  var cM=pc.chartMonths||pc.curr;
   if(pc.chartGran==='daily'){
     var s=pc.chartStart,e=pc.chartEnd;
     var totC=aggDailyChart(RAW.investimentos_daily,'total_invest',s,e);
@@ -1023,6 +1262,185 @@ function renderCatalogo(){
   document.getElementById('tbl-catalogo').innerHTML=h+'</tbody>';
 }
 
+
+function renderScorecard(){
+  var pc=getPeriodConfig(),meses=pc.gran==='daily'?(pc.currM||[]):(pc.curr||[]);
+  var rep={};
+  (RAW.seller_reputation||[]).forEach(function(r){rep[String(r.cust_id)]=r;});
+  var now=new Date(),fD=function(d){return d.toISOString().slice(0,10);};
+  var w1e=fD(addDays(now,-1)),w1s=fD(addDays(now,-7));
+  var w2e=fD(addDays(now,-8)),w2s=fD(addDays(now,-14));
+  function repClass(lv){
+    if(!lv) return 'rep-green';
+    if(lv.includes('platinum')) return 'rep-platinum';
+    if(lv.includes('gold')) return 'rep-gold';
+    if(lv==='green') return 'rep-green';
+    if(lv==='yellow') return 'rep-yellow';
+    if(lv==='orange') return 'rep-orange';
+    return 'rep-red';
+  }
+  function repLabel(lv){
+    var m={'green_platinum':'Platinum','green_gold':'Gold','green':'Verde','yellow':'Amarelo','orange':'Laranja','red':'Vermelho'};
+    return m[lv]||lv||'-';
+  }
+  function sumDailySeller(cid,start,end,field){
+    return (RAW.geral_daily||[]).filter(function(r){return String(r.cust_id)===cid&&r.dia>=start&&r.dia<=end;})
+      .reduce(function(a,r){return a+(Number(r[field])||0);},0);
+  }
+  var sorted=[...RAW.sellers].sort(function(a,b){return a.name.localeCompare(b.name,'pt-BR');});
+  var html='';
+  sorted.forEach(function(s){
+    var cid=String(s.cust_id);
+    var sRows=RAW.geral_monthly.filter(function(r){return String(r.cust_id)===cid;});
+    var sAllM=aggAllMonths(sRows,['gmv','si']);
+    var gmvCurr=sumMeses(sAllM,meses,'gmv');
+    var siCurr=sumMeses(sAllM,meses,'si');
+    var asp=siCurr?gmvCurr/siCurr:0;
+    var gmvPrev=pc.prevMoM?sumMeses(sAllM,pc.prevMoM,'gmv'):0;
+    var gmvYoy=pc.prevYoY?sumMeses(sAllM,pc.prevYoY,'gmv'):0;
+    var gmvWow1=sumDailySeller(cid,w1s,w1e,'gmv');
+    var gmvWow2=sumDailySeller(cid,w2s,w2e,'gmv');
+    var momPct=gmvPrev?((gmvCurr-gmvPrev)/gmvPrev*100):null;
+    var yoyPct=gmvYoy?((gmvCurr-gmvYoy)/gmvYoy*100):null;
+    var wowPct=gmvWow2?((gmvWow1-gmvWow2)/gmvWow2*100):null;
+    var r=rep[cid]||{};
+    function delta(pct,lbl){
+      if(pct==null||!isFinite(pct)) return '';
+      var cls=pct>=0?'dp':'dn',arr=pct>=0?'\u25b2':'\u25bc';
+      return '<span class="'+cls+'">'+lbl+': '+arr+Math.abs(pct).toFixed(1)+'%</span>';
+    }
+    html+='<div class="sc-card">'
+      +'<div class="sc-card-header">'
+      +'<div class="sc-seller-name">'+s.name+'</div>'
+      +'<span class="rep-badge '+repClass(r.REP_CURRENT_LEVEL)+'">'+repLabel(r.REP_CURRENT_LEVEL)+'</span>'
+      +'</div>'
+      +'<div class="sc-gmv">'+fmtBRL(gmvCurr)+'</div>'
+      +'<div class="sc-deltas">'+delta(wowPct,'WoW')+delta(momPct,'MoM')+delta(yoyPct,'YoY')+'</div>'
+      +'<div class="sc-asp">ASP: '+fmtBRL(asp)+'</div>'
+      +(r.claims_pct!=null?'<div class="sc-metrics">'
+        +'<div class="sc-metric"><div class="sc-metric-val">'+fmtPct(r.claims_pct)+'</div><div class="sc-metric-lbl">Reclam.</div></div>'
+        +'<div class="sc-metric"><div class="sc-metric-val">'+fmtPct(r.delay_pct)+'</div><div class="sc-metric-lbl">Atraso</div></div>'
+        +'<div class="sc-metric"><div class="sc-metric-val">'+fmtPct(r.cancel_pct)+'</div><div class="sc-metric-lbl">Cancel.</div></div>'
+        +'</div>':'')
+      +'</div>';
+  });
+  var el=document.getElementById('scorecard-sellers');
+  if(el) el.innerHTML=html;
+}
+
+function renderVisitas(){
+  var pc=getPeriodConfig();
+  setBadge('period-badge-visitas',pc);
+  var meses=pc.gran==='daily'?(pc.currM||[]):(pc.curr||[]);
+  var allVis=aggAllMonths(RAW.visitas_monthly,['visits','visits_vip']);
+  var allGmv=aggAllMonths(RAW.geral_monthly,['gmv','si']);
+  var ids=sellerIds(state.seller);
+  var totVis=sumMeses(allVis,meses,'visits');
+  var totSI=sumMeses(allGmv,meses,'si');
+  var convPct=totVis?+(totSI/totVis*100).toFixed(2):0;
+  var visK=computeKPI(pc,allVis,'visits');
+  document.getElementById('kpi-visitas').innerHTML=
+    kpiCard('Total Visitas',fmtNum(totVis),pc,visK.d1,visK.d2)+
+    '<div class="kpi-card"><div class="kpi-label">Convers\u00e3o</div><div class="kpi-value">'+fmtPct(convPct)+'</div><div class="kpi-delta"><span class="dn0">Pedidos / Visitas</span></div></div>'+
+    '<div class="kpi-card"><div class="kpi-label">Pedidos (SI)</div><div class="kpi-value">'+fmtNum(totSI)+'</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>';
+  var cM=pc.chartMonths||pc.curr;
+  makeChart('ch-vis-mes','bar',cM,[{label:'Visitas',data:cM.map(function(m){return allVis[m]?.visits||0;}),backgroundColor:'#3483FA',borderRadius:4}]);
+  makeChart('ch-conv-mes','line',cM,[{label:'Convers\u00e3o%',data:cM.map(function(m){var v=allVis[m]?.visits||0,s=allGmv[m]?.si||0;return v?+(s/v*100).toFixed(2):null;}),borderColor:'#00A650',backgroundColor:'#00A65022',fill:true,tension:.3,pointRadius:3}],{yFmt:function(v){return v?.toFixed(1)+'%';}});
+  var bySV=aggBySeller(RAW.visitas_monthly,meses,['visits','visits_vip']);
+  var bySG=aggBySeller(RAW.geral_monthly,meses,['si']);
+  var h='<thead><tr><th>Seller</th><th>Visitas</th><th>Visitas VIP</th><th>Pedidos (SI)</th><th>Convers\u00e3o</th></tr></thead><tbody>';
+  Object.entries(bySV).sort(function(a,b){return b[1].visits-a[1].visits;}).forEach(function([cid,v]){
+    var si=bySG[cid]?.si||0,cv=v.visits?+(si/v.visits*100).toFixed(1):0;
+    h+='<tr><td>'+sellerLabel(cid)+'</td><td>'+fmtNum(v.visits)+'</td><td>'+fmtNum(v.visits_vip)+'</td><td>'+fmtNum(si)+'</td><td>'+fmtPct(cv)+'</td></tr>';
+  });
+  document.getElementById('tbl-visitas-sellers').innerHTML=h+'</tbody>';
+  var itemMap={};
+  (RAW.visitas_items||[]).filter(function(r){return ids.includes(String(r.cust_id));}).forEach(function(r){itemMap[r.item_id]={cust_id:r.cust_id,visits:r.visits};});
+  var siMap={};
+  (RAW.catalogo_items||[]).filter(function(r){return ids.includes(String(r.cust_id));}).forEach(function(r){siMap[r.item_id]={titulo:r.titulo,si:r.si};});
+  var iRows=Object.entries(itemMap).sort(function(a,b){return b[1].visits-a[1].visits;}).slice(0,50);
+  var h2='<thead><tr><th>Seller</th><th>Item ID</th><th>T\u00edtulo</th><th>Visitas</th><th>Pedidos (SI)</th><th>Convers\u00e3o</th></tr></thead><tbody>';
+  iRows.forEach(function([iid,v]){
+    var info=siMap[iid]||{titulo:'',si:0};
+    var cv=v.visits?+(info.si/v.visits*100).toFixed(1):0;
+    h2+='<tr><td>'+sellerLabel(v.cust_id)+'</td><td>'+iid+'</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+info.titulo+'</td><td>'+fmtNum(v.visits)+'</td><td>'+fmtNum(info.si)+'</td><td>'+fmtPct(cv)+'</td></tr>';
+  });
+  document.getElementById('tbl-visitas-items').innerHTML=h2+'</tbody>';
+}
+
+function renderCampanhas(){
+  var ids=sellerIds(state.seller);
+  var rows=(RAW.campanhas||[]).filter(function(r){return ids.includes(String(r.cust_id));});
+  var TYPE_LABELS={TIER_1:'Tier 1',TIER_3:'Tier 3',SMART:'Smart',CUSTOM:'On Demand',PRENEGOTIATED:'Pr\u00e9 Neg.',LIGHTNING:'Rel\u00e2mpago',BANK:'Banco',UNHEALTHY_STOCK:'Unhealthy'};
+  var summ={};
+  rows.forEach(function(r){var k=String(r.cust_id);if(!summ[k]){summ[k]={eligible:0,optin:0,total:0};}summ[k].total++;if(r.elegivel)summ[k].eligible++;if(r.opt_in)summ[k].optin++;});
+  var hs='<thead><tr><th>Seller</th><th>Total Itens</th><th>Eleg\u00edveis</th><th>Opt-In</th><th>% Opt-In/Eleg.</th></tr></thead><tbody>';
+  Object.entries(summ).sort(function(a,b){return b[1].eligible-a[1].eligible;}).forEach(function([cid,v]){
+    var pct=v.eligible?+(v.optin/v.eligible*100).toFixed(1):0;
+    hs+='<tr><td>'+sellerLabel(cid)+'</td><td>'+fmtNum(v.total)+'</td><td>'+fmtNum(v.eligible)+'</td><td>'+fmtNum(v.optin)+'</td><td><span class="badge">'+fmtPct(pct)+'</span></td></tr>';
+  });
+  document.getElementById('tbl-camp-sellers').innerHTML=hs+'</tbody>';
+  var hi='<thead><tr><th>Seller</th><th>Tipo</th><th>Item ID</th><th>Eleg\u00edvel</th><th>Opt-In</th><th>Pre\u00e7o Inicial</th><th>Pre\u00e7o Final</th><th>Desc.%</th><th>GMV L30D</th></tr></thead><tbody>';
+  rows.sort(function(a,b){return (b.gmv_l30d||0)-(a.gmv_l30d||0);}).slice(0,500).forEach(function(r){
+    var desc=r.preco_inicial&&r.preco_final&&r.preco_inicial>0?+((1-r.preco_final/r.preco_inicial)*100).toFixed(1):null;
+    hi+='<tr><td>'+sellerLabel(r.cust_id)+'</td><td><span class="badge">'+(TYPE_LABELS[r.tipo]||r.tipo)+'</span></td><td>'+r.item_id+'</td><td class="'+(r.elegivel?'tag-pos':'tag-neg')+'">'+(r.elegivel?'Sim':'N\u00e3o')+'</td><td class="'+(r.opt_in?'tag-pos':'dn0')+'">'+(r.opt_in?'Sim':'-')+'</td><td>'+fmtBRL(r.preco_inicial)+'</td><td>'+fmtBRL(r.preco_final)+'</td><td>'+(desc!=null?fmtPct(desc):'-')+'</td><td>'+fmtBRL(r.gmv_l30d)+'</td></tr>';
+  });
+  document.getElementById('tbl-camp-items').innerHTML=hi+'</tbody>';
+}
+
+function renderBPC(){
+  var ids=sellerIds(state.seller);
+  var rows=(RAW.bpc_aurora||[]).filter(function(r){return ids.includes(String(r.SELLER_ID));});
+  var summ={};
+  rows.forEach(function(r){var k=String(r.SELLER_ID);if(!summ[k]){summ[k]={vis:0,visExp:0,items:0,nonComp:0};}summ[k].vis+=(Number(r.VISITS_MATCH)||0);summ[k].visExp+=(Number(r.VISITS_EXP3)||0);summ[k].items++;if(r.CLASSIFICACAO==='Nao Competitivo')summ[k].nonComp++;});
+  var totVis=Object.values(summ).reduce(function(a,v){return a+v.vis;},0);
+  var totExp=Object.values(summ).reduce(function(a,v){return a+v.visExp;},0);
+  var bpcRate=totVis?+(totExp/totVis*100).toFixed(1):0;
+  document.getElementById('kpi-bpc').innerHTML=
+    '<div class="kpi-card"><div class="kpi-label">Visitas Totais (15d)</div><div class="kpi-value">'+fmtNum(Math.round(totVis))+'</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>'+
+    '<div class="kpi-card"><div class="kpi-label">Visitas Caras (3%+)</div><div class="kpi-value">'+fmtNum(Math.round(totExp))+'</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>'+
+    '<div class="kpi-card"><div class="kpi-label">% Visitas Caras</div><div class="kpi-value">'+fmtPct(bpcRate)+'</div><div class="kpi-delta"><span class="dn0">Pior = mais alto</span></div></div>';
+  var hs='<thead><tr><th>Seller</th><th>It\u00eans</th><th>N\u00e3o Comp.</th><th>Visitas Totais</th><th>Visitas Caras</th><th>% Caras</th></tr></thead><tbody>';
+  Object.entries(summ).sort(function(a,b){return b[1].visExp-a[1].visExp;}).forEach(function([cid,v]){
+    var pct=v.vis?+(v.visExp/v.vis*100).toFixed(1):0;
+    hs+='<tr><td>'+sellerLabel(cid)+'</td><td>'+fmtNum(v.items)+'</td><td class="'+(v.nonComp>0?'tag-neg':'tag-pos')+'">'+fmtNum(v.nonComp)+'</td><td>'+fmtNum(Math.round(v.vis))+'</td><td>'+fmtNum(Math.round(v.visExp))+'</td><td class="'+(pct>30?'tag-neg':pct>10?'dp':'tag-pos')+'">'+fmtPct(pct)+'</td></tr>';
+  });
+  document.getElementById('tbl-bpc-sellers').innerHTML=hs+'</tbody>';
+  var hi='<thead><tr><th>Seller</th><th>Item ID</th><th>T\u00edtulo</th><th>Pre\u00e7o Meli</th><th>Pre\u00e7o Rival</th><th>Gap</th><th>Rival</th><th>Visitas</th><th>Vis. Caras</th><th>Link ML</th><th>Link Rival</th></tr></thead><tbody>';
+  rows.filter(function(r){return r.CLASSIFICACAO==='Nao Competitivo';}).sort(function(a,b){return (Number(b.VISITS_EXP3)||0)-(Number(a.VISITS_EXP3)||0);}).slice(0,200).forEach(function(r){
+    var gap=r.PRICE_MELI&&r.COMP_PRICE_RIVAL_MIN?+((r.PRICE_MELI/r.COMP_PRICE_RIVAL_MIN-1)*100).toFixed(1):null;
+    var mlLnk=r.PERMALINK?('<a href="'+r.PERMALINK+'" target="_blank" style="color:var(--ml-blue2)">ML</a>'):'-';
+    var riLnk=r.COMP_URL?('<a href="'+r.COMP_URL+'" target="_blank" style="color:var(--red)">Rival</a>'):'-';
+    hi+='<tr><td>'+sellerLabel(r.SELLER_ID)+'</td><td>'+r.ITE_ITEM_ID+'</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(r.TITLE||'')+'</td><td>'+fmtBRL(r.PRICE_MELI)+'</td><td>'+fmtBRL(r.COMP_PRICE_RIVAL_MIN)+'</td><td class="tag-neg">'+(gap!=null?'+'+gap.toFixed(1)+'%':'-')+'</td><td>'+(r.COMP_RIVAL_NAME||'-')+'</td><td>'+fmtNum(Math.round(Number(r.VISITS_MATCH)||0))+'</td><td>'+fmtNum(Math.round(Number(r.VISITS_EXP3)||0))+'</td><td>'+mlLnk+'</td><td>'+riLnk+'</td></tr>';
+  });
+  document.getElementById('tbl-bpc-items').innerHTML=hi+'</tbody>';
+}
+
+function renderAurora(){
+  var ids=sellerIds(state.seller);
+  var rows=(RAW.bpc_aurora||[]).filter(function(r){return ids.includes(String(r.SELLER_ID));});
+  var sellerQual={};
+  rows.forEach(function(r){if(r.SELLER_QUALIFICATION&&!sellerQual[r.SELLER_ID])sellerQual[r.SELLER_ID]=r.SELLER_QUALIFICATION;});
+  var QUAL_ORDER={C1:1,C2:2,C3:3,C4:4,RC:5};
+  var QUAL_LABEL={C1:'C1 - Saud\u00e1vel',C2:'C2 - Alerta Pre\u00e7.',C3:'C3 - Cr\u00f4nico',C4:'C4 - Quarentena',RC:'RC - Recupera\u00e7\u00e3o'};
+  var QUAL_CLASS={C1:'tag-pos',C2:'dp',C3:'tag-neg',C4:'tag-neg',RC:'dn0'};
+  var ELIGIBLE={C1:true,C2:true,C3:false,C4:true,RC:true};
+  var hs='<thead><tr><th>Seller</th><th>Classifica\u00e7\u00e3o</th><th>Eleg\u00edvel Benef.</th><th>It\u00eans N\u00e3o Comp.</th></tr></thead><tbody>';
+  Object.entries(sellerQual).sort(function(a,b){return (QUAL_ORDER[a[1]]||9)-(QUAL_ORDER[b[1]]||9);}).forEach(function([cid,q]){
+    var nonComp=rows.filter(function(r){return String(r.SELLER_ID)===cid&&r.CLASSIFICACAO==='Nao Competitivo';}).length;
+    var elig=ELIGIBLE[q]!==undefined?ELIGIBLE[q]:true;
+    hs+='<tr><td>'+sellerLabel(cid)+'</td><td class="'+(QUAL_CLASS[q]||'dn0')+'">'+(QUAL_LABEL[q]||q)+'</td><td class="'+(elig?'tag-pos':'tag-neg')+'">'+(elig?'Sim':'N\u00e3o (C3)')+'</td><td>'+fmtNum(nonComp)+'</td></tr>';
+  });
+  document.getElementById('tbl-aurora-sellers').innerHTML=hs+'</tbody>';
+  var hi='<thead><tr><th>Seller</th><th>Item ID</th><th>T\u00edtulo</th><th>Pre\u00e7o Meli</th><th>Pre\u00e7o Rival</th><th>Gap</th><th>Rival</th><th>Status</th><th>Link ML</th><th>Link Rival</th></tr></thead><tbody>';
+  rows.filter(function(r){return r.CLASSIFICACAO==='Nao Competitivo';}).sort(function(a,b){return (Number(b.VISITS_EXP3)||0)-(Number(a.VISITS_EXP3)||0);}).slice(0,300).forEach(function(r){
+    var gap=r.PRICE_MELI&&r.COMP_PRICE_RIVAL_MIN?+((r.PRICE_MELI/r.COMP_PRICE_RIVAL_MIN-1)*100).toFixed(1):null;
+    var mlLnk=r.PERMALINK?('<a href="'+r.PERMALINK+'" target="_blank" style="color:var(--ml-blue2)">ML</a>'):'-';
+    var riLnk=r.COMP_URL?('<a href="'+r.COMP_URL+'" target="_blank" style="color:var(--red)">Rival</a>'):'-';
+    hi+='<tr><td>'+sellerLabel(r.SELLER_ID)+'</td><td>'+r.ITE_ITEM_ID+'</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(r.TITLE||'')+'</td><td>'+fmtBRL(r.PRICE_MELI)+'</td><td>'+fmtBRL(r.COMP_PRICE_RIVAL_MIN)+'</td><td class="tag-neg">'+(gap!=null?'+'+gap.toFixed(1)+'%':'-')+'</td><td>'+(r.COMP_RIVAL_NAME||'-')+'</td><td class="tag-neg">N\u00e3o Comp.</td><td>'+mlLnk+'</td><td>'+riLnk+'</td></tr>';
+  });
+  document.getElementById('tbl-aurora-items').innerHTML=hi+'</tbody>';
+}
 function setPeriod(p,btn){
   state.period=p;
   document.querySelectorAll('.period-bar .btn:not(.custom-btn)').forEach(b=>b.classList.remove('active'));
@@ -1074,13 +1492,17 @@ document.addEventListener('click',e=>{
   const w=document.querySelector('.custom-wrap');
   if(w&&!w.contains(e.target))document.getElementById('custom-dropdown').classList.remove('open');
 });
-function renderAll(){
-  if(state.tab==='geral')         renderGeral();
-  if(state.tab==='logistica')     renderLogistica();
-  if(state.tab==='ads')           renderAds();
-  if(state.tab==='investimentos') renderInvestimentos();
-  if(state.tab==='catalogo')      renderCatalogo();
-}
+function renderAll(){
+  if(state.tab==='geral')         renderGeral();
+  if(state.tab==='logistica')     renderLogistica();
+  if(state.tab==='ads')           renderAds();
+  if(state.tab==='investimentos') renderInvestimentos();
+  if(state.tab==='catalogo')      renderCatalogo();
+  if(state.tab==='visitas')       renderVisitas();
+  if(state.tab==='campanhas')     renderCampanhas();
+  if(state.tab==='bpc')           renderBPC();
+  if(state.tab==='aurora')        renderAurora();
+}
 document.getElementById('updated-at').textContent='Atualizado: '+RAW.updated_at;
 buildSidebar();
 renderAll();
