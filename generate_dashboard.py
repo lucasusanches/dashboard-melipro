@@ -44,7 +44,7 @@ client = bigquery.Client(project=PROJECT)
 
 # ── Query helpers ────────────────────────────────────────────────────────────
 def run(sql: str) -> list[dict]:
-    time.sleep(3)
+    time.sleep(5)
     rows = list(client.query(sql).result())
     return [dict(r) for r in rows]
 
@@ -289,8 +289,8 @@ def q_visitas_monthly():
         SELECT
             FORMAT_DATE('%Y-%m', TIM_DAY)   AS mes,
             CUS_CUST_ID_SEL                 AS cust_id,
-            SUM(QTY_VISITS)                 AS visits,
-            SUM(QTY_VISITS_VIP)             AS visits_vip
+            SUM(QTY_PAGEVIEWS)              AS visits,
+            SUM(QTY_PAGEVIEWS_VIP)          AS visits_vip
         FROM `meli-bi-data.WHOWNER.BT_VISITS_ITEM`
         WHERE SIT_SITE_ID = 'MLB'
           AND CUS_CUST_ID_SEL IN ({IDS_STR})
@@ -307,7 +307,7 @@ def q_visitas_daily():
         SELECT
             CAST(TIM_DAY AS STRING)         AS dia,
             CUS_CUST_ID_SEL                 AS cust_id,
-            SUM(QTY_VISITS)                 AS visits
+            SUM(QTY_PAGEVIEWS)              AS visits
         FROM `meli-bi-data.WHOWNER.BT_VISITS_ITEM`
         WHERE SIT_SITE_ID = 'MLB'
           AND CUS_CUST_ID_SEL IN ({IDS_STR})
@@ -324,8 +324,8 @@ def q_visitas_items():
         SELECT
             CUS_CUST_ID_SEL                 AS cust_id,
             ITE_ITEM_ID                     AS item_id,
-            SUM(QTY_VISITS)                 AS visits,
-            SUM(QTY_VISITS_VIP)             AS visits_vip
+            SUM(QTY_PAGEVIEWS)              AS visits,
+            SUM(QTY_PAGEVIEWS_VIP)          AS visits_vip
         FROM `meli-bi-data.WHOWNER.BT_VISITS_ITEM`
         WHERE SIT_SITE_ID = 'MLB'
           AND CUS_CUST_ID_SEL IN ({IDS_STR})
@@ -429,8 +429,9 @@ def q_campanhas():
         WHERE o.SIT_SITE_ID = 'MLB'
           AND o.CUS_CUST_ID_SEL IN ({IDS_STR})
           AND o.DS >= DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY)
-        ORDER BY o.CUS_CUST_ID_SEL, o.DS DESC, o.TYPE, o.ITE_ITEM_ID
-        LIMIT 10000
+        AND o.ITEM_CANDIDATE_FLG = TRUE
+        ORDER BY o.CUS_CUST_ID_SEL, o.DS DESC, o.ITEM_WITH_OFFER_FLG DESC, o.TYPE, o.ITE_ITEM_ID
+        LIMIT 1500
     """)
 
 
@@ -724,6 +725,9 @@ td:first-child{text-align:left;font-weight:500}
         <div class="table-wrap"><table id="tbl-visitas-items"></table></div>
       </div>
       <div class="tab-content" id="tab-campanhas">
+        <div style="background:#FFF8E1;border:1px solid #F9A825;border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:#F57F17">
+          <b>⚠️ Work in Progress</b> — Dados parciais. A query de campanhas está em ajuste para cobrir todos os sellers corretamente.
+        </div>
         <div class="section-title">Resumo por Seller</div>
         <div class="table-wrap"><table id="tbl-camp-sellers"></table></div>
         <div class="section-title">Campanhas por Item (últimos 2 dias)</div>
@@ -1205,9 +1209,9 @@ function renderInvestimentos(){
   var invTotal=g1+g2+g3;
   document.getElementById('kpi-inv').innerHTML=
     '<div class="kpi-card"><div class="kpi-label">Total Investido</div><div class="kpi-value">'+ fmtBRL(invTotal) +'</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>'+
-    '<div class="kpi-card"><div class="kpi-label">G1 Comercial (Pandora)</div><div class="kpi-value">'+ fmtBRL(g1) +'</div><div class="kpi-delta"><span class="dn0">Pr\u00e9 Acordo + DoD + Rel\u00e2mpago</span></div></div>'+
+    '<div class="kpi-card"><div class="kpi-label">Comercial</div><div class="kpi-value">'+ fmtBRL(g1) +'</div><div class="kpi-delta"><span class="dn0">Pr\u00e9 Acordo + DoD + Rel\u00e2mpago</span></div></div>'+
     '<div class="kpi-card"><div class="kpi-label">G2 Central Promo\u00e7\u00f5es</div><div class="kpi-value">'+ fmtBRL(g2) +'</div><div class="kpi-delta"><span class="dn0">PM + Smart + Autom\u00e1ticas</span></div></div>'+
-    '<div class="kpi-card"><div class="kpi-label">G3 Cupons ML</div><div class="kpi-value">'+ fmtBRL(g3) +'</div><div class="kpi-delta"><span class="dn0">CPN_SELLER_FLG=FALSE</span></div></div>';
+    '<div class="kpi-card"><div class="kpi-label">Cupons ML</div><div class="kpi-value">'+ fmtBRL(g3) +'</div><div class="kpi-delta"><span class="dn0">Investimento via Cupons</span></div></div>';
   var cyI=aggCurrentYear(RAW.investimentos_monthly,INV_FIELDS),cym=Object.keys(cyI).sort();
   var cM=pc.chartMonths||pc.curr;
   if(pc.chartGran==='daily'){
@@ -1215,14 +1219,14 @@ function renderInvestimentos(){
     var totC=aggDailyChart(RAW.investimentos_daily,'total_invest',s,e);
     var invMC=aggDailyChartMulti(RAW.investimentos_daily,['cupons','rebate_pre','rebate_outras'],s,e);
     makeChart('ch-inv-total','bar',totC.labels,[
-      {label:'Cupons',data:totC.labels.map(function(d){return invMC.byField[d]?.cupons||0;}),backgroundColor:'#FFE600',borderRadius:2},
-      {label:'Rebate Pr\u00e9',data:totC.labels.map(function(d){return invMC.byField[d]?.rebate_pre||0;}),backgroundColor:'#3483FA',borderRadius:2},
-      {label:'Rebate Outras',data:totC.labels.map(function(d){return invMC.byField[d]?.rebate_outras||0;}),backgroundColor:'#00A650',borderRadius:2}
+      {label:'Cupons',data:totC.labels.map(function(d){return invMC.byField[d]?.g3_cupons_ml||0;}),backgroundColor:'#FFE600',borderRadius:2},
+      {label:'Rebate Pr\u00e9',data:totC.labels.map(function(d){return (invMC.byField[d]?.g1_pre_acordo||0)+(invMC.byField[d]?.g1_dod||0)+(invMC.byField[d]?.g1_relampago||0);}),backgroundColor:'#3483FA',borderRadius:2},
+      {label:'Rebate Outras',data:totC.labels.map(function(d){return (invMC.byField[d]?.g2_price_matching||0)+(invMC.byField[d]?.g2_smart||0)+(invMC.byField[d]?.g2_automaticas||0);}),backgroundColor:'#00A650',borderRadius:2}
     ],{extra:{scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,grid:{color:'#F0F0F0'}}}}});
-    makeChart('ch-cupons','line',totC.labels,[{label:'Cupons',data:totC.labels.map(function(d){return invMC.byField[d]?.cupons||0;}),borderColor:'#E67E22',backgroundColor:'#E67E2222',fill:true,tension:.3,pointRadius:2}],{yFmt:v=>'R$'+v.toLocaleString('pt-BR',{notation:'compact'})});
+    makeChart('ch-cupons','line',totC.labels,[{label:'Cupons',data:totC.labels.map(function(d){return invMC.byField[d]?.g3_cupons_ml||0;}),borderColor:'#E67E22',backgroundColor:'#E67E2222',fill:true,tension:.3,pointRadius:2}],{yFmt:v=>'R$'+v.toLocaleString('pt-BR',{notation:'compact'})});
     makeChart('ch-rebates','line',totC.labels,[
-      {label:'Pr\u00e9-neg.',data:totC.labels.map(function(d){return invMC.byField[d]?.rebate_pre||0;}),borderColor:'#3483FA',fill:false,tension:.3,pointRadius:2},
-      {label:'Outras',data:totC.labels.map(function(d){return invMC.byField[d]?.rebate_outras||0;}),borderColor:'#00A650',fill:false,tension:.3,pointRadius:2}
+      {label:'Pr\u00e9-neg.',data:totC.labels.map(function(d){return (invMC.byField[d]?.g1_pre_acordo||0)+(invMC.byField[d]?.g1_dod||0)+(invMC.byField[d]?.g1_relampago||0);}),borderColor:'#3483FA',fill:false,tension:.3,pointRadius:2},
+      {label:'Outras',data:totC.labels.map(function(d){return (invMC.byField[d]?.g2_price_matching||0)+(invMC.byField[d]?.g2_smart||0)+(invMC.byField[d]?.g2_automaticas||0);}),borderColor:'#00A650',fill:false,tension:.3,pointRadius:2}
     ],{yFmt:v=>'R$'+v.toLocaleString('pt-BR',{notation:'compact'})});
   } else {
     var cM=pc.chartMonths||pc.curr;
@@ -1239,13 +1243,13 @@ function renderInvestimentos(){
   }
   // Mix donut: always current period
   makeChart('ch-inv-mix','doughnut',['Cupons','Rebate Pr\u00e9-neg.','Rebate Outras'],
-    [{data:[li.cupons,li.rebate_pre,li.rebate_outras],backgroundColor:['#FFE600','#3483FA','#00A650'],borderWidth:0}],
+    [{data:[g3,g1,g2],backgroundColor:['#FFE600','#3483FA','#00A650'],borderWidth:0}],
     {extra:{plugins:{legend:{display:true,position:'bottom'}}}});
 
-  var bySI=aggBySeller(RAW.investimentos_monthly,meses,['gmv','cupons','rebate_pre','rebate_outras','total_invest']);
+  var bySI=aggBySeller(RAW.investimentos_monthly,meses,['gmv','g1_pre_acordo','g1_dod','g1_relampago','g2_price_matching','g2_smart','g2_automaticas','g3_cupons_ml']);
   var h='<thead><tr><th>Seller</th><th>GMV</th><th>Cupons</th><th>Rebate Pr\u00e9</th><th>Rebate Outras</th><th>Total Invest.</th><th>Invest/GMV%</th></tr></thead><tbody>';
   Object.entries(bySI).sort(function(a,b){return b[1].total_invest-a[1].total_invest;}).forEach(function([cid,v]){
-    var p2=v.gmv?(v.total_invest/v.gmv)*100:0;
+    var tot2=(v.g1_pre_acordo||0)+(v.g1_dod||0)+(v.g1_relampago||0)+(v.g2_price_matching||0)+(v.g2_smart||0)+(v.g2_automaticas||0)+(v.g3_cupons_ml||0);var p2=v.gmv?(tot2/v.gmv)*100:0;
     h+='<tr><td>'+sellerLabel(cid)+'</td><td>'+fmtBRL(v.gmv)+'</td><td>'+fmtBRL(v.cupons)+'</td><td>'+fmtBRL(v.rebate_pre)+'</td><td>'+fmtBRL(v.rebate_outras)+'</td><td><b>'+fmtBRL(v.total_invest)+'</b></td><td>'+fmtPct(p2)+'</td></tr>';
   });
   document.getElementById('tbl-inv-sellers').innerHTML=h+'</tbody>';
@@ -1264,7 +1268,12 @@ function renderCatalogo(){
 
 
 function renderScorecard(){
-  var pc=getPeriodConfig(),meses=pc.gran==='daily'?(pc.currM||[]):(pc.curr||[]);
+  var el=document.getElementById('scorecard-sellers');
+  if(state.seller!=='all'){if(el)el.innerHTML='';return;}
+  var now=new Date(),yr=now.getFullYear(),mo=now.getMonth();
+  var meses=[fmtMonth(yr,mo)];
+  var prevMoScM=mo===0?[fmtMonth(yr-1,11)]:[fmtMonth(yr,mo-1)];
+  var prevYoScM=[fmtMonth(yr-1,mo)];
   var rep={};
   (RAW.seller_reputation||[]).forEach(function(r){rep[String(r.cust_id)]=r;});
   var now=new Date(),fD=function(d){return d.toISOString().slice(0,10);};
@@ -1296,8 +1305,8 @@ function renderScorecard(){
     var gmvCurr=sumMeses(sAllM,meses,'gmv');
     var siCurr=sumMeses(sAllM,meses,'si');
     var asp=siCurr?gmvCurr/siCurr:0;
-    var gmvPrev=pc.prevMoM?sumMeses(sAllM,pc.prevMoM,'gmv'):0;
-    var gmvYoy=pc.prevYoY?sumMeses(sAllM,pc.prevYoY,'gmv'):0;
+    var gmvPrev=sumMeses(sAllM,prevMoScM,'gmv');
+    var gmvYoy =sumMeses(sAllM,prevYoScM,'gmv');
     var gmvWow1=sumDailySeller(cid,w1s,w1e,'gmv');
     var gmvWow2=sumDailySeller(cid,w2s,w2e,'gmv');
     var momPct=gmvPrev?((gmvCurr-gmvPrev)/gmvPrev*100):null;
@@ -1397,9 +1406,9 @@ function renderBPC(){
   var totExp=Object.values(summ).reduce(function(a,v){return a+v.visExp;},0);
   var bpcRate=totVis?+(totExp/totVis*100).toFixed(1):0;
   document.getElementById('kpi-bpc').innerHTML=
-    '<div class="kpi-card"><div class="kpi-label">Visitas Totais (15d)</div><div class="kpi-value">'+fmtNum(Math.round(totVis))+'</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>'+
-    '<div class="kpi-card"><div class="kpi-label">Visitas Caras (3%+)</div><div class="kpi-value">'+fmtNum(Math.round(totExp))+'</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>'+
-    '<div class="kpi-card"><div class="kpi-label">% Visitas Caras</div><div class="kpi-value">'+fmtPct(bpcRate)+'</div><div class="kpi-delta"><span class="dn0">Pior = mais alto</span></div></div>';
+    '<div class="kpi-card"><div class="kpi-label">Eventos de Comparação (15d)</div><div class="kpi-value">'+fmtNum(Math.round(totVis))+'</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>'+
+    '<div class="kpi-card"><div class="kpi-label">Eventos: Preço Meli 3%+ acima</div><div class="kpi-value">'+fmtNum(Math.round(totExp))+'</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>'+
+    '<div class="kpi-card"><div class="kpi-label">% Eventos Caros</div><div class="kpi-value">'+fmtPct(bpcRate)+'</div><div class="kpi-delta"><span class="dn0">Pior = mais alto</span></div></div>';
   var hs='<thead><tr><th>Seller</th><th>It\u00eans</th><th>N\u00e3o Comp.</th><th>Visitas Totais</th><th>Visitas Caras</th><th>% Caras</th></tr></thead><tbody>';
   Object.entries(summ).sort(function(a,b){return b[1].visExp-a[1].visExp;}).forEach(function([cid,v]){
     var pct=v.vis?+(v.visExp/v.vis*100).toFixed(1):0;
