@@ -533,7 +533,7 @@ HTML_TEMPLATE = """\
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Proxima Nova',Arial,sans-serif;background:var(--bg);color:var(--txt);font-size:14px;height:100vh;display:flex;flex-direction:column}
 .header{background:var(--ml-yellow);padding:10px 20px;display:flex;align-items:center;gap:14px;box-shadow:0 2px 4px rgba(0,0,0,.12);flex-shrink:0}
-.logo{height:44px;object-fit:contain}
+.logo{height:52px;object-fit:contain;image-rendering:crisp-edges}
 .header-title{font-size:18px;font-weight:700;color:var(--ml-blue)}
 .header-sub{font-size:11px;color:var(--ml-blue);opacity:.7;margin-top:1px}
 .updated{margin-left:auto;font-size:11px;color:var(--ml-blue);opacity:.6;white-space:nowrap}
@@ -1359,6 +1359,198 @@ function renderCatalogo(){
   document.getElementById('tbl-catalogo').innerHTML=h+'</tbody>';
 }
 
+
+function renderScorecard(){
+  var el=document.getElementById('scorecard-sellers');
+  if(state.seller!=='all'){if(el)el.innerHTML='';return;}
+  var now=new Date(),yr=now.getFullYear(),mo=now.getMonth();
+  var meses=[fmtMonth(yr,mo)];
+  var prevMoScM=mo===0?[fmtMonth(yr-1,11)]:[fmtMonth(yr,mo-1)];
+  var prevYoScM=[fmtMonth(yr-1,mo)];
+  var rep={};
+  (RAW.seller_reputation||[]).forEach(function(r){rep[String(r.cust_id)]=r;});
+  var fD=function(d){return d.toISOString().slice(0,10);};
+  var w1e=fD(addDays(now,-1)),w1s=fD(addDays(now,-7));
+  var w2e=fD(addDays(now,-8)),w2s=fD(addDays(now,-14));
+  function repClass(lv){
+    if(!lv) return 'rep-green';
+    if(lv.includes('platinum')) return 'rep-platinum';
+    if(lv.includes('gold')) return 'rep-gold';
+    if(lv==='green') return 'rep-green';
+    if(lv==='yellow') return 'rep-yellow';
+    if(lv==='orange') return 'rep-orange';
+    return 'rep-red';
+  }
+  function repLabel(lv){
+    var m={'green_platinum':'Platinum','green_gold':'Gold','green':'Verde','yellow':'Amarelo','orange':'Laranja','red':'Vermelho'};
+    return m[lv]||lv||'-';
+  }
+  function sumDailySeller(cid,start,end,field){
+    return (RAW.geral_daily||[]).filter(function(r){return String(r.cust_id)===cid&&r.dia>=start&&r.dia<=end;})
+      .reduce(function(a,r){return a+(Number(r[field])||0);},0);
+  }
+  var sorted=[...RAW.sellers].sort(function(a,b){return a.name.localeCompare(b.name,'pt-BR');});
+  var html='';
+  sorted.forEach(function(s){
+    var cid=String(s.cust_id);
+    var sRows=RAW.geral_monthly.filter(function(r){return String(r.cust_id)===cid;});
+    var sAllM=aggAllMonths(sRows,['gmv','si']);
+    var gmvCurr=sumMeses(sAllM,meses,'gmv');
+    var siCurr=sumMeses(sAllM,meses,'si');
+    var asp=siCurr?gmvCurr/siCurr:0;
+    var gmvPrev=sumMeses(sAllM,prevMoScM,'gmv');
+    var gmvYoy=sumMeses(sAllM,prevYoScM,'gmv');
+    var gmvWow1=sumDailySeller(cid,w1s,w1e,'gmv');
+    var gmvWow2=sumDailySeller(cid,w2s,w2e,'gmv');
+    var momPct=gmvPrev?((gmvCurr-gmvPrev)/gmvPrev*100):null;
+    var yoyPct=gmvYoy?((gmvCurr-gmvYoy)/gmvYoy*100):null;
+    var wowPct=gmvWow2?((gmvWow1-gmvWow2)/gmvWow2*100):null;
+    var r=rep[cid]||{};
+    function delta(pct,lbl){
+      if(pct==null||!isFinite(pct)) return '';
+      var cls=pct>=0?'dp':'dn',arr=pct>=0?'\u25b2':'\u25bc';
+      return '<span class="'+cls+'">'+lbl+': '+arr+Math.abs(pct).toFixed(1)+'%</span>';
+    }
+    html+='<div class="sc-card">'
+      +'<div class="sc-card-header">'
+      +'<div class="sc-seller-name">'+s.name+'</div>'
+      +'<span class="rep-badge '+repClass(r.REP_CURRENT_LEVEL)+'">'+repLabel(r.REP_CURRENT_LEVEL)+'</span>'
+      +'</div>'
+      +'<div class="sc-gmv">'+fmtBRL(gmvCurr)+'</div>'
+      +'<div class="sc-deltas">'+delta(wowPct,'WoW')+delta(momPct,'MoM')+delta(yoyPct,'YoY')+'</div>'
+      +'<div class="sc-asp">ASP: '+fmtBRL(asp)+'</div>'
+      +(r.claims_pct!=null?'<div class="sc-metrics">'
+        +'<div class="sc-metric"><div class="sc-metric-val">'+fmtPct(r.claims_pct)+'</div><div class="sc-metric-lbl">Reclam.</div></div>'
+        +'<div class="sc-metric"><div class="sc-metric-val">'+fmtPct(r.delay_pct)+'</div><div class="sc-metric-lbl">Atraso</div></div>'
+        +'<div class="sc-metric"><div class="sc-metric-val">'+fmtPct(r.cancel_pct)+'</div><div class="sc-metric-lbl">Cancel.</div></div>'
+        +'</div>':'')
+      +'</div>';
+  });
+  if(el) el.innerHTML=html;
+}
+
+function renderVisitas(){
+  var pc=getPeriodConfig();
+  setBadge('period-badge-visitas',pc);
+  var meses=pc.gran==='daily'?(pc.currM||[]):(pc.curr||[]);
+  var allVis=aggAllMonths(RAW.visitas_monthly,['visits','visits_vip']);
+  var allGmv=aggAllMonths(RAW.geral_monthly,['gmv','si']);
+  var ids=sellerIds(state.seller);
+  var totVis=sumMeses(allVis,meses,'visits');
+  var totSI=sumMeses(allGmv,meses,'si');
+  var convPct=totVis?+(totSI/totVis*100).toFixed(2):0;
+  var visK=computeKPI(pc,allVis,'visits');
+  document.getElementById('kpi-visitas').innerHTML=
+    kpiCard('Total Visitas (PV)',fmtNum(totVis),pc,visK.d1,visK.d2)+
+    '<div class="kpi-card"><div class="kpi-label">Convers\u00e3o</div><div class="kpi-value">'+fmtPct(convPct)+'</div><div class="kpi-delta"><span class="dn0">Pedidos / Visitas</span></div></div>'+
+    '<div class="kpi-card"><div class="kpi-label">Pedidos (SI)</div><div class="kpi-value">'+fmtNum(totSI)+'</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>';
+  var cM=pc.chartMonths||pc.curr;
+  if(pc.chartGran==='daily'){
+    var vc=aggDailyChart(RAW.visitas_daily,'visits',pc.chartStart,pc.chartEnd);
+    makeChart('ch-vis-mes','bar',vc.labels,[{label:'Visitas',data:vc.data,backgroundColor:'#3483FA',borderRadius:4}]);
+    var vgc=aggDailyChartMulti(RAW.geral_daily,['si'],pc.chartStart,pc.chartEnd);
+    var vdc=aggDailyChartMulti(RAW.visitas_daily,['visits'],pc.chartStart,pc.chartEnd);
+    makeChart('ch-conv-mes','line',vc.labels,[{label:'Convers\u00e3o%',data:vc.labels.map(function(d){var v=vdc.byField[d]?.visits||0,s=vgc.byField[d]?.si||0;return v?+(s/v*100).toFixed(2):null;}),borderColor:'#00A650',backgroundColor:'#00A65022',fill:true,tension:.3,pointRadius:3}],{yFmt:function(v){return v?.toFixed(1)+'%';}});
+  } else {
+    makeChart('ch-vis-mes','bar',cM,[{label:'Visitas',data:cM.map(function(m){return allVis[m]?.visits||0;}),backgroundColor:'#3483FA',borderRadius:4}]);
+    makeChart('ch-conv-mes','line',cM,[{label:'Convers\u00e3o%',data:cM.map(function(m){var v=allVis[m]?.visits||0,s=allGmv[m]?.si||0;return v?+(s/v*100).toFixed(2):null;}),borderColor:'#00A650',backgroundColor:'#00A65022',fill:true,tension:.3,pointRadius:3}],{yFmt:function(v){return v?.toFixed(1)+'%';}});
+  }
+  var bySV=aggBySeller(RAW.visitas_monthly,meses,['visits','visits_vip']);
+  var bySG=aggBySeller(RAW.geral_monthly,meses,['si']);
+  var h='<thead><tr><th>Seller</th><th>Visitas (PV)</th><th>Visitas VIP</th><th>Pedidos (SI)</th><th>Convers\u00e3o</th></tr></thead><tbody>';
+  Object.entries(bySV).sort(function(a,b){return b[1].visits-a[1].visits;}).forEach(function([cid,v]){
+    var si=bySG[cid]?.si||0,cv=v.visits?+(si/v.visits*100).toFixed(1):0;
+    h+='<tr><td>'+sellerLabel(cid)+'</td><td>'+fmtNum(v.visits)+'</td><td>'+fmtNum(v.visits_vip)+'</td><td>'+fmtNum(si)+'</td><td>'+fmtPct(cv)+'</td></tr>';
+  });
+  document.getElementById('tbl-visitas-sellers').innerHTML=h+'</tbody>';
+  var itemMap={};
+  (RAW.visitas_items||[]).filter(function(r){return ids.includes(String(r.cust_id));}).forEach(function(r){itemMap[r.item_id]={cust_id:r.cust_id,visits:r.visits};});
+  var siMap={};
+  (RAW.catalogo_items||[]).filter(function(r){return ids.includes(String(r.cust_id));}).forEach(function(r){siMap[r.item_id]={titulo:r.titulo,si:r.si};});
+  var iRows=Object.entries(itemMap).sort(function(a,b){return b[1].visits-a[1].visits;}).slice(0,50);
+  var h2='<thead><tr><th>Seller</th><th>Item ID</th><th>T\u00edtulo</th><th>Visitas</th><th>Pedidos (SI)</th><th>Convers\u00e3o</th></tr></thead><tbody>';
+  iRows.forEach(function([iid,v]){
+    var info=siMap[iid]||{titulo:'',si:0};
+    var cv=v.visits?+(info.si/v.visits*100).toFixed(1):0;
+    h2+='<tr><td>'+sellerLabel(v.cust_id)+'</td><td>'+iid+'</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+info.titulo+'</td><td>'+fmtNum(v.visits)+'</td><td>'+fmtNum(info.si)+'</td><td>'+fmtPct(cv)+'</td></tr>';
+  });
+  document.getElementById('tbl-visitas-items').innerHTML=h2+'</tbody>';
+}
+
+function renderCampanhas(){
+  var ids=sellerIds(state.seller);
+  var rows=(RAW.campanhas||[]).filter(function(r){return ids.includes(String(r.cust_id));});
+  var TYPE_LABELS={TIER_1:'Tier 1',TIER_3:'Tier 3',SMART:'Smart',CUSTOM:'On Demand',PRENEGOTIATED:'Pr\u00e9 Neg.',LIGHTNING:'Rel\u00e2mpago',BANK:'Banco',UNHEALTHY_STOCK:'Unhealthy'};
+  var summ={};
+  rows.forEach(function(r){var k=String(r.cust_id);if(!summ[k]){summ[k]={eligible:0,optin:0,total:0};}summ[k].total++;if(r.elegivel)summ[k].eligible++;if(r.opt_in)summ[k].optin++;});
+  var hs='<thead><tr><th>Seller</th><th>Total Itens</th><th>Eleg\u00edveis</th><th>Opt-In</th><th>% Opt-In/Eleg.</th></tr></thead><tbody>';
+  Object.entries(summ).sort(function(a,b){return b[1].eligible-a[1].eligible;}).forEach(function([cid,v]){
+    var pct=v.eligible?+(v.optin/v.eligible*100).toFixed(1):0;
+    hs+='<tr><td>'+sellerLabel(cid)+'</td><td>'+fmtNum(v.total)+'</td><td>'+fmtNum(v.eligible)+'</td><td>'+fmtNum(v.optin)+'</td><td><span class="badge">'+fmtPct(pct)+'</span></td></tr>';
+  });
+  document.getElementById('tbl-camp-sellers').innerHTML=hs+'</tbody>';
+  var hi='<thead><tr><th>Seller</th><th>Tipo</th><th>Item ID</th><th>Eleg\u00edvel</th><th>Opt-In</th><th>Pre\u00e7o Inicial</th><th>Pre\u00e7o Final</th><th>Desc.%</th><th>GMV L30D</th></tr></thead><tbody>';
+  rows.sort(function(a,b){return (b.gmv_l30d||0)-(a.gmv_l30d||0);}).slice(0,500).forEach(function(r){
+    var desc=r.preco_inicial&&r.preco_final&&r.preco_inicial>0?+((1-r.preco_final/r.preco_inicial)*100).toFixed(1):null;
+    hi+='<tr><td>'+sellerLabel(r.cust_id)+'</td><td><span class="badge">'+(TYPE_LABELS[r.tipo]||r.tipo)+'</span></td><td>'+r.item_id+'</td><td class="'+(r.elegivel?'tag-pos':'tag-neg')+'">'+(r.elegivel?'Sim':'N\u00e3o')+'</td><td class="'+(r.opt_in?'tag-pos':'dn0')+'">'+(r.opt_in?'Sim':'-')+'</td><td>'+fmtBRL(r.preco_inicial)+'</td><td>'+fmtBRL(r.preco_final)+'</td><td>'+(desc!=null?fmtPct(desc):'-')+'</td><td>'+fmtBRL(r.gmv_l30d)+'</td></tr>';
+  });
+  document.getElementById('tbl-camp-items').innerHTML=hi+'</tbody>';
+}
+
+function renderBPC(){
+  var ids=sellerIds(state.seller);
+  var rows=(RAW.bpc_aurora||[]).filter(function(r){return ids.includes(String(r.SELLER_ID));});
+  var summ={};
+  rows.forEach(function(r){var k=String(r.SELLER_ID);if(!summ[k]){summ[k]={vis:0,visExp:0,items:0,nonComp:0};}summ[k].vis+=(Number(r.VISITS_MATCH)||0);summ[k].visExp+=(Number(r.VISITS_EXP3)||0);summ[k].items++;if(r.CLASSIFICACAO==='Nao Competitivo')summ[k].nonComp++;});
+  var totVis=Object.values(summ).reduce(function(a,v){return a+v.vis;},0);
+  var totExp=Object.values(summ).reduce(function(a,v){return a+v.visExp;},0);
+  var bpcRate=totVis?+(totExp/totVis*100).toFixed(1):0;
+  document.getElementById('kpi-bpc').innerHTML=
+    '<div class="kpi-card"><div class="kpi-label">Eventos de Compara\u00e7\u00e3o (15d)</div><div class="kpi-value">'+fmtNum(Math.round(totVis))+'</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>'+
+    '<div class="kpi-card"><div class="kpi-label">Eventos: Pre\u00e7o Meli 3%+</div><div class="kpi-value">'+fmtNum(Math.round(totExp))+'</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>'+
+    '<div class="kpi-card"><div class="kpi-label">% Eventos Caros</div><div class="kpi-value">'+fmtPct(bpcRate)+'</div><div class="kpi-delta"><span class="dn0">Pior = mais alto</span></div></div>';
+  var hs='<thead><tr><th>Seller</th><th>It\u00eans</th><th>N\u00e3o Comp.</th><th>Eventos Compara\u00e7\u00e3o</th><th>Eventos Caros</th><th>% Caros</th></tr></thead><tbody>';
+  Object.entries(summ).sort(function(a,b){return b[1].visExp-a[1].visExp;}).forEach(function([cid,v]){
+    var pct=v.vis?+(v.visExp/v.vis*100).toFixed(1):0;
+    hs+='<tr><td>'+sellerLabel(cid)+'</td><td>'+fmtNum(v.items)+'</td><td class="'+(v.nonComp>0?'tag-neg':'tag-pos')+'">'+fmtNum(v.nonComp)+'</td><td>'+fmtNum(Math.round(v.vis))+'</td><td>'+fmtNum(Math.round(v.visExp))+'</td><td class="'+(pct>30?'tag-neg':pct>10?'dp':'tag-pos')+'">'+fmtPct(pct)+'</td></tr>';
+  });
+  document.getElementById('tbl-bpc-sellers').innerHTML=hs+'</tbody>';
+  var hi='<thead><tr><th>Seller</th><th>Item ID</th><th>T\u00edtulo</th><th>Pre\u00e7o Meli</th><th>Pre\u00e7o Rival</th><th>Gap</th><th>Rival</th><th>Eventos</th><th>Ev. Caros</th><th>Link ML</th><th>Link Rival</th></tr></thead><tbody>';
+  rows.filter(function(r){return r.CLASSIFICACAO==='Nao Competitivo';}).sort(function(a,b){return (Number(b.VISITS_EXP3)||0)-(Number(a.VISITS_EXP3)||0);}).slice(0,200).forEach(function(r){
+    var gap=r.PRICE_MELI&&r.COMP_PRICE_RIVAL_MIN?+((r.PRICE_MELI/r.COMP_PRICE_RIVAL_MIN-1)*100).toFixed(1):null;
+    var mlLnk=r.PERMALINK?('<a href="'+r.PERMALINK+'" target="_blank" style="color:var(--ml-blue2)">ML</a>'):'-';
+    var riLnk=r.COMP_URL?('<a href="'+r.COMP_URL+'" target="_blank" style="color:var(--red)">Rival</a>'):'-';
+    hi+='<tr><td>'+sellerLabel(r.SELLER_ID)+'</td><td>'+r.ITE_ITEM_ID+'</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(r.TITLE||'')+'</td><td>'+fmtBRL(r.PRICE_MELI)+'</td><td>'+fmtBRL(r.COMP_PRICE_RIVAL_MIN)+'</td><td class="tag-neg">'+(gap!=null?'+'+gap.toFixed(1)+'%':'-')+'</td><td>'+(r.COMP_RIVAL_NAME||'-')+'</td><td>'+fmtNum(Math.round(Number(r.VISITS_MATCH)||0))+'</td><td>'+fmtNum(Math.round(Number(r.VISITS_EXP3)||0))+'</td><td>'+mlLnk+'</td><td>'+riLnk+'</td></tr>';
+  });
+  document.getElementById('tbl-bpc-items').innerHTML=hi+'</tbody>';
+}
+
+function renderAurora(){
+  var ids=sellerIds(state.seller);
+  var rows=(RAW.bpc_aurora||[]).filter(function(r){return ids.includes(String(r.SELLER_ID));});
+  var sellerQual={};
+  rows.forEach(function(r){if(r.SELLER_QUALIFICATION&&!sellerQual[r.SELLER_ID])sellerQual[r.SELLER_ID]=r.SELLER_QUALIFICATION;});
+  var QUAL_ORDER={C1:1,C2:2,C3:3,C4:4,RC:5};
+  var QUAL_LABEL={C1:'C1 - Saud\u00e1vel',C2:'C2 - Alerta Pre\u00e7.',C3:'C3 - Cr\u00f4nico',C4:'C4 - Quarentena',RC:'RC - Recupera\u00e7\u00e3o'};
+  var QUAL_CLASS={C1:'tag-pos',C2:'dp',C3:'tag-neg',C4:'tag-neg',RC:'dn0'};
+  var ELIGIBLE={C1:true,C2:true,C3:false,C4:true,RC:true};
+  var hs='<thead><tr><th>Seller</th><th>Classifica\u00e7\u00e3o</th><th>Eleg\u00edvel Benef.</th><th>It\u00eans N\u00e3o Comp.</th></tr></thead><tbody>';
+  Object.entries(sellerQual).sort(function(a,b){return (QUAL_ORDER[a[1]]||9)-(QUAL_ORDER[b[1]]||9);}).forEach(function([cid,q]){
+    var nonComp=rows.filter(function(r){return String(r.SELLER_ID)===cid&&r.CLASSIFICACAO==='Nao Competitivo';}).length;
+    var elig=ELIGIBLE[q]!==undefined?ELIGIBLE[q]:true;
+    hs+='<tr><td>'+sellerLabel(cid)+'</td><td class="'+(QUAL_CLASS[q]||'dn0')+'">'+(QUAL_LABEL[q]||q)+'</td><td class="'+(elig?'tag-pos':'tag-neg')+'">'+(elig?'Sim':'N\u00e3o (C3)')+'</td><td>'+fmtNum(nonComp)+'</td></tr>';
+  });
+  document.getElementById('tbl-aurora-sellers').innerHTML=hs+'</tbody>';
+  var hi='<thead><tr><th>Seller</th><th>Item ID</th><th>T\u00edtulo</th><th>Pre\u00e7o Meli</th><th>Pre\u00e7o Rival</th><th>Gap</th><th>Rival</th><th>Status</th><th>Link ML</th><th>Link Rival</th></tr></thead><tbody>';
+  rows.filter(function(r){return r.CLASSIFICACAO==='Nao Competitivo';}).sort(function(a,b){return (Number(b.VISITS_EXP3)||0)-(Number(a.VISITS_EXP3)||0);}).slice(0,300).forEach(function(r){
+    var gap=r.PRICE_MELI&&r.COMP_PRICE_RIVAL_MIN?+((r.PRICE_MELI/r.COMP_PRICE_RIVAL_MIN-1)*100).toFixed(1):null;
+    var mlLnk=r.PERMALINK?('<a href="'+r.PERMALINK+'" target="_blank" style="color:var(--ml-blue2)">ML</a>'):'-';
+    var riLnk=r.COMP_URL?('<a href="'+r.COMP_URL+'" target="_blank" style="color:var(--red)">Rival</a>'):'-';
+    hi+='<tr><td>'+sellerLabel(r.SELLER_ID)+'</td><td>'+r.ITE_ITEM_ID+'</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(r.TITLE||'')+'</td><td>'+fmtBRL(r.PRICE_MELI)+'</td><td>'+fmtBRL(r.COMP_PRICE_RIVAL_MIN)+'</td><td class="tag-neg">'+(gap!=null?'+'+gap.toFixed(1)+'%':'-')+'</td><td>'+(r.COMP_RIVAL_NAME||'-')+'</td><td class="tag-neg">N\u00e3o Comp.</td><td>'+mlLnk+'</td><td>'+riLnk+'</td></tr>';
+  });
+  document.getElementById('tbl-aurora-items').innerHTML=hi+'</tbody>';
+}
+
 function setPeriod(p,btn){
   state.period=p;
   buildPeriodButtons();
@@ -1422,7 +1614,8 @@ function renderAll(){
   if(state.tab==='aurora')        renderAurora();
 }
 document.getElementById('updated-at').textContent='Atualizado: '+RAW.updated_at;
-buildSidebar();
+buildPeriodButtons();
+buildSidebar();
 renderAll();
 </script>
 </body>
