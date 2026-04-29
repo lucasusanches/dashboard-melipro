@@ -982,23 +982,8 @@ function aggDailyChartMulti(rows,fields,start,end){
   var labels=Object.keys(agg).sort();
   return {labels:labels,byField:agg};
 }
-function aggDailyChart(rows,field,start,end){
-  var ids=sellerIds(state.seller),agg={};
-  rows.filter(function(r){return ids.includes(String(r.cust_id))&&r.dia>=start&&r.dia<=end;})
-    .forEach(function(r){agg[r.dia]=(agg[r.dia]||0)+(Number(r[field])||0);});
-  var labels=Object.keys(agg).sort();
-  return {labels:labels,data:labels.map(function(l){return agg[l];})};
-}
-function aggDailyChartMulti(rows,fields,start,end){
-  var ids=sellerIds(state.seller),agg={};
-  rows.filter(function(r){return ids.includes(String(r.cust_id))&&r.dia>=start&&r.dia<=end;})
-    .forEach(function(r){
-      if(!agg[r.dia]){agg[r.dia]={};fields.forEach(function(f){agg[r.dia][f]=0;});}
-      fields.forEach(function(f){agg[r.dia][f]+=(Number(r[f])||0);});
-    });
-  var labels=Object.keys(agg).sort();
-  return {labels:labels,byField:agg};
-}
+
+
 function computeKPI(pc,allM,field){
   var value,d1=null,d2=null;
   if(pc.gran==='daily'){
