@@ -262,6 +262,7 @@ def q_catalogo_top_items():
           AND ORD_CLOSED_DT >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 YEAR), YEAR)
           AND ORD_CLOSED_DT < CURRENT_DATE()
         GROUP BY 1, 2, 3
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY cust_id, mes ORDER BY SUM(GMV_LC) DESC) <= 20
         ORDER BY 1, 2, 4 DESC
     """)
 
