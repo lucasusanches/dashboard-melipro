@@ -49,6 +49,37 @@ from decimal import Decimal
 import time
 from google.cloud import bigquery
 
+# ── Lock file (evita execuções paralelas) ─────────────────────────────────────
+_LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".generate.lock")
+_LOCK_STALE_SECONDS = 40 * 60  # considera lock abandonado após 40 min
+
+def _acquire_lock():
+    if os.path.exists(_LOCK_FILE):
+        try:
+            age = time.time() - os.path.getmtime(_LOCK_FILE)
+            if age < _LOCK_STALE_SECONDS:
+                with open(_LOCK_FILE) as f:
+                    pid = f.read().strip()
+                print(f"AVISO: outra execução em andamento (PID {pid}, há {age/60:.1f} min). Abortando.")
+                sys.exit(1)
+            print(f"Lock antigo removido (idle {age/60:.1f} min).")
+            os.remove(_LOCK_FILE)
+        except OSError:
+            pass
+    try:
+        fd = os.open(_LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+    except FileExistsError:
+        print("AVISO: lock já existe. Abortando para evitar execução paralela.")
+        sys.exit(1)
+
+def _release_lock():
+    try:
+        os.remove(_LOCK_FILE)
+    except OSError:
+        pass
+
 
 
 
@@ -712,86 +743,76 @@ def q_buybox_monthly():
 
 
 
-def q_catalogo_top_items():
-
-
-
-    """Top 20 itens por seller nos últimos 3 meses."""
-
-
-
+def q_catalogo_monthly():
+    """Top 20 itens por seller (ranking últimos 3 meses) — agregação mensal, janela 25 meses."""
     return run(f"""
-
-
-
+        WITH top_items AS (
+            SELECT CUS_CUST_ID_SEL, ITE_ITEM_ID, MAX(ITE_ITEM_TITLE) AS titulo
+            FROM {TABLE}
+            WHERE CUS_CUST_ID_SEL IN ({IDS_STR})
+              AND GMV_FLG = TRUE
+              AND ORD_CLOSED_DT >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 MONTH)
+              AND ORD_CLOSED_DT < CURRENT_DATE()
+            GROUP BY 1, 2
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY CUS_CUST_ID_SEL
+                ORDER BY SUM(GMV_LC) DESC
+            ) <= 20
+        )
         SELECT
+            FORMAT_DATE('%Y-%m', d.ORD_CLOSED_DT)    AS mes,
+            d.CUS_CUST_ID_SEL                         AS cust_id,
+            d.ITE_ITEM_ID                             AS item_id,
+            t.titulo,
+            ROUND(SUM(d.GMV_LC), 2)                   AS gmv,
+            SUM(d.SI)                                 AS si,
+            MAX(COALESCE(d.VERTICAL, 'OUTROS'))        AS vertical
+        FROM {TABLE} d
+        INNER JOIN top_items t
+            ON d.CUS_CUST_ID_SEL = t.CUS_CUST_ID_SEL
+           AND d.ITE_ITEM_ID     = t.ITE_ITEM_ID
+        WHERE d.CUS_CUST_ID_SEL IN ({IDS_STR})
+          AND d.GMV_FLG = TRUE
+          AND d.ORD_CLOSED_DT >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 YEAR), YEAR)
+          AND d.ORD_CLOSED_DT < CURRENT_DATE()
+        GROUP BY 1, 2, 3, 4
+        ORDER BY 2, 3, 1
+    """)
 
 
-
-            CUS_CUST_ID_SEL                                        AS cust_id,
-
-
-
-            ITE_ITEM_ID                                            AS item_id,
-
-
-
-            MAX(ITE_ITEM_TITLE)                                    AS titulo,
-
-
-
-            ROUND(SUM(GMV_LC), 2)                                  AS gmv,
-
-
-
-            SUM(SI)                                                AS si,
-
-
-
-            ROUND(SAFE_DIVIDE(SUM(GMV_LC), SUM(SI)), 2)            AS asp,
-
-
-
-            ROUND(SUM(CASE WHEN BUYBOX_FLG = TRUE THEN GMV_LC ELSE 0 END), 2) AS gmv_bb,
-
-
-
-            MAX(COALESCE(VERTICAL, 'OUTROS'))                                  AS vertical
-
-
-
-        FROM {TABLE}
-
-
-
-        WHERE CUS_CUST_ID_SEL IN ({IDS_STR})
-
-
-
-          AND GMV_FLG = TRUE
-
-
-
-          AND ORD_CLOSED_DT >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 MONTH)
-
-
-
-          AND ORD_CLOSED_DT < CURRENT_DATE()
-
-
-
-        GROUP BY 1, 2
-
-
-
-        QUALIFY ROW_NUMBER() OVER (PARTITION BY CUS_CUST_ID_SEL ORDER BY SUM(GMV_LC) DESC) <= 20
-
-
-
-        ORDER BY 1, 4 DESC
-
-
-
+def q_catalogo_daily():
+    """Top 20 itens por seller — agregação diária, últimos 90 dias."""
+    return run(f"""
+        WITH top_items AS (
+            SELECT CUS_CUST_ID_SEL, ITE_ITEM_ID
+            FROM {TABLE}
+            WHERE CUS_CUST_ID_SEL IN ({IDS_STR})
+              AND GMV_FLG = TRUE
+              AND ORD_CLOSED_DT >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 MONTH)
+              AND ORD_CLOSED_DT < CURRENT_DATE()
+            GROUP BY 1, 2
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY CUS_CUST_ID_SEL
+                ORDER BY SUM(GMV_LC) DESC
+            ) <= 20
+        )
+        SELECT
+            CAST(d.ORD_CLOSED_DT AS STRING)           AS dia,
+            d.CUS_CUST_ID_SEL                         AS cust_id,
+            d.ITE_ITEM_ID                             AS item_id,
+            ROUND(SUM(d.GMV_LC), 2)                   AS gmv,
+            SUM(d.SI)                                 AS si,
+            MAX(COALESCE(d.VERTICAL, 'OUTROS'))        AS vertical
+        FROM {TABLE} d
+        INNER JOIN top_items t
+            ON d.CUS_CUST_ID_SEL = t.CUS_CUST_ID_SEL
+           AND d.ITE_ITEM_ID     = t.ITE_ITEM_ID
+        WHERE d.CUS_CUST_ID_SEL IN ({IDS_STR})
+          AND d.GMV_FLG = TRUE
+          AND d.ORD_CLOSED_DT >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
+          AND d.ORD_CLOSED_DT < CURRENT_DATE()
+        GROUP BY 1, 2, 3
+        ORDER BY 1, 2, 3
     """)
 
 
@@ -1129,8 +1150,10 @@ def build_dataset() -> dict:
     inv_d    = q_investimentos_daily()
     print("  → BuyBox...")
     bb_m     = q_buybox_monthly()
-    print("  → Catálogo top itens...")
-    cat      = q_catalogo_top_items()
+    print("  -> Catalogo mensal...")
+    cat_m    = q_catalogo_monthly()
+    print("  -> Catalogo diario...")
+    cat_d    = q_catalogo_daily()
     print("  -> Reputacao sellers...")
     rep      = q_seller_reputation()
     print("  -> Visitas mensal...")
@@ -1182,7 +1205,8 @@ def build_dataset() -> dict:
         "investimentos_monthly": clean_rows(inv_m),
         "investimentos_daily": clean_rows(inv_d),
         "buybox_monthly":      clean_rows(bb_m),
-        "catalogo_items":      clean_rows(cat),
+        "catalogo_monthly":    clean_rows(cat_m),
+        "catalogo_daily":      clean_rows(cat_d),
         "seller_reputation":   clean_rows(rep),
         "visitas_monthly":     clean_rows(vis_m),
         "visitas_daily":       clean_rows(vis_d),
@@ -1916,18 +1940,16 @@ td:first-child{text-align:left;font-weight:500}
         <div class="table-wrap"><table id="tbl-pandora-items"></table></div>
       </div>
       <div class="tab-content" id="tab-catalogo">
+        <div id="period-badge-catalogo" class="period-badge"></div>
         <div class="cat-filter-bar" style="display:none">
-          <span class="cat-filter-label">\ud83c\udff7\ufe0f Filtrar por Categoria:</span>
+          <span class="cat-filter-label">&#127991; Filtrar por Categoria:</span>
           <select id="cat-sel-catalogo" onchange="setCatFilter(this.value)">
             <option value="">Todas as categorias</option>
             <option value="FURNISHING &amp; HOUSEWARE">Furnishing &amp; Houseware</option>
           </select>
         </div>
-        <div class="section-title">\u2b50 Top It\u00eans por Seller \u2014 \u00daltimos 3 meses</div>
-
-
-
-        <div class="table-wrap"><table id="tbl-catalogo"></table></div>
+        <div class="section-title">&#11088; Top It&ecirc;ns por Seller &mdash; Top 20 por GMV</div>
+        <div class="table-wrap" style="overflow-x:auto"><table id="tbl-catalogo"></table></div>
       </div>
       <div class="tab-content" id="tab-visitas">
         <div id="period-badge-visitas" class="period-badge"></div>
@@ -3204,42 +3226,111 @@ function renderInvestimentos(){
 }
 function renderCatalogo(){
   updateCatFilterBar();
-  const ids=sellerIds(state.seller),rows=catRows(RAW.catalogo_items).filter(r=>ids.includes(String(r.cust_id)));
+  var pc=getPeriodConfig();
+  setBadge('period-badge-catalogo',pc);
+  var ids=sellerIds(state.seller);
 
-
-
-  const tG=rows.reduce((a,r)=>a+(Number(r.gmv)||0),0);
-
-
-
-  let h=`<thead><tr><th>Seller</th><th>Item ID</th><th>T\u00edtulo</th><th>GMV</th><th>SI</th><th>ASP</th><th>Share %</th><th>GMV BB</th><th>BB%</th><th>Link</th></tr></thead><tbody>`;
-
-
-
-  rows.forEach(r=>{
-
-
-
-    const share=tG?(Number(r.gmv)/tG)*100:0,bbPct=Number(r.gmv)?(Number(r.gmv_bb)/Number(r.gmv))*100:0;
-
-
-
-    const mlLink=`https://produto.mercadolivre.com.br/MLB-${r.item_id}`;
-
-
-
-    h+=`<tr><td>${sellerLabel(r.cust_id)}</td><td>${r.item_id}</td><td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.titulo||''}</td><td>${fmtBRL(r.gmv)}</td><td>${fmtNum(r.si)}</td><td>${fmtBRL(r.asp)}</td><td><span class="badge">${fmtPct(share)}</span></td><td>${fmtBRL(r.gmv_bb)}</td><td class="${bbPct>=50?'tag-pos':'tag-neg'}">${fmtPct(bbPct)}</td><td><a href="${mlLink}" target="_blank" style="color:var(--ml-blue2);text-decoration:none">Ver</a></td></tr>`;
-
-
-
+  // Build titulo lookup from monthly data
+  var titleMap={};
+  (RAW.catalogo_monthly||[]).forEach(function(r){
+    var k=String(r.cust_id)+'|'+String(r.item_id);
+    if(!titleMap[k])titleMap[k]=r.titulo||'';
   });
 
+  // Aggregate item data from a row array filtered by a date/month predicate
+  function aggItems(rows,filterFn){
+    var out={};
+    (rows||[]).filter(function(r){return ids.includes(String(r.cust_id));})
+              .filter(filterFn)
+              .forEach(function(r){
+                var k=String(r.cust_id)+'|'+String(r.item_id);
+                if(!out[k])out[k]={cust_id:r.cust_id,item_id:r.item_id,
+                  titulo:r.titulo||titleMap[k]||'',vertical:r.vertical||'',gmv:0,si:0};
+                out[k].gmv+=(Number(r.gmv)||0);
+                out[k].si +=(Number(r.si )||0);
+              });
+    Object.values(out).forEach(function(v){v.asp=v.si?v.gmv/v.si:0;});
+    return out;
+  }
 
+  // Apply catRows filter
+  var catM=catRows(RAW.catalogo_monthly||[]);
+  var catD=catRows(RAW.catalogo_daily||[]);
 
+  var currMap,prevMap;
+  if(pc.gran==='daily'){
+    // Day / week periods \u2014 use daily data
+    currMap=aggItems(catD,function(r){return r.dia>=pc.curr[0]&&r.dia<=pc.curr[1];});
+    prevMap=pc.prev?aggItems(catD,function(r){return r.dia>=pc.prev[0]&&r.dia<=pc.prev[1];}):{};
+  } else {
+    // Month / quarter / year / MTD \u2014 use monthly for current
+    currMap=aggItems(catM,function(r){return (pc.curr||[]).includes(r.mes);});
+    if(pc.prevMoMDailyRange&&pc.diasPassados>0){
+      // MTD: compare current month (naturally D-1 from BQ) vs same days in prev month (daily)
+      prevMap=aggItems(catD,function(r){return r.dia>=pc.prevMoMDailyRange[0]&&r.dia<=pc.prevMoMDailyRange[1];});
+    } else if(pc.prevMoM){
+      prevMap=aggItems(catM,function(r){return (pc.prevMoM||[]).includes(r.mes);});
+    } else if(pc.prevQoQ){
+      prevMap=aggItems(catM,function(r){return (pc.prevQoQ||[]).includes(r.mes);});
+    } else if(pc.prevYoY){
+      prevMap=aggItems(catM,function(r){return (pc.prevYoY||[]).includes(r.mes);});
+    } else {prevMap={};}
+  }
+
+  // Sort current items by GMV desc, take top 40 across all selected sellers
+  var currItems=Object.values(currMap).sort(function(a,b){return b.gmv-a.gmv;}).slice(0,40);
+  var tCurr=currItems.reduce(function(a,r){return a+r.gmv;},0);
+  var tPrev=Object.values(prevMap).reduce(function(a,r){return a+r.gmv;},0);
+
+  function deltaBadge(val,isPP){
+    if(val===null||val===undefined||isNaN(val))return '<span style="color:var(--muted)">\u2014</span>';
+    var cls=val>=0?'tag-pos':'tag-neg';
+    var sign=val>=0?'+':'';
+    return '<span class="'+cls+'">'+sign+val.toFixed(1)+(isPP?' pp':'%')+'</span>';
+  }
+
+  var thS='padding:8px 9px;font-size:11px;font-weight:700;background:var(--ml-blue);color:#fff;white-space:nowrap';
+  var h='<thead><tr>'
+    +'<th style="'+thS+';text-align:left;border-radius:6px 0 0 0">Seller</th>'
+    +'<th style="'+thS+'">Item</th>'
+    +'<th style="'+thS+';text-align:left;min-width:160px">T\u00edtulo</th>'
+    +'<th style="'+thS+';text-align:right">GMV</th>'
+    +'<th style="'+thS+';text-align:right">SI</th>'
+    +'<th style="'+thS+';text-align:right">ASP</th>'
+    +'<th style="'+thS+';text-align:right">Share%</th>'
+    +'<th style="'+thS+';text-align:center">\u0394 GMV</th>'
+    +'<th style="'+thS+';text-align:center">\u0394 SI</th>'
+    +'<th style="'+thS+';text-align:center">\u0394 ASP</th>'
+    +'<th style="'+thS+';text-align:center">\u0394 Share</th>'
+    +'<th style="'+thS+';text-align:center;border-radius:0 6px 0 0">Link</th>'
+    +'</tr></thead><tbody>';
+
+  currItems.forEach(function(r){
+    var p=prevMap[String(r.cust_id)+'|'+String(r.item_id)];
+    var share=tCurr?r.gmv/tCurr*100:0;
+    var pShare=(p&&tPrev)?p.gmv/tPrev*100:null;
+    var dGmv=(p&&p.gmv)?(r.gmv-p.gmv)/p.gmv*100:null;
+    var dSi =(p&&p.si )?(r.si -p.si )/p.si *100:null;
+    var dAsp=(p&&p.asp)?(r.asp-p.asp)/p.asp*100:null;
+    var dShare=(pShare!==null&&pShare!==undefined)?(share-pShare):null;
+    var titulo=r.titulo||titleMap[String(r.cust_id)+'|'+String(r.item_id)]||'';
+    var mlLink='https://produto.mercadolivre.com.br/MLB-'+r.item_id;
+    h+='<tr>'
+      +'<td>'+sellerLabel(r.cust_id)+'</td>'
+      +'<td>'+r.item_id+'</td>'
+      +'<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+titulo+'</td>'
+      +'<td style="text-align:right">'+fmtBRL(r.gmv)+'</td>'
+      +'<td style="text-align:right">'+fmtNum(r.si)+'</td>'
+      +'<td style="text-align:right">'+fmtBRL(r.asp)+'</td>'
+      +'<td style="text-align:right"><span class="badge">'+fmtPct(share)+'</span></td>'
+      +'<td style="text-align:center">'+deltaBadge(dGmv,false)+'</td>'
+      +'<td style="text-align:center">'+deltaBadge(dSi ,false)+'</td>'
+      +'<td style="text-align:center">'+deltaBadge(dAsp,false)+'</td>'
+      +'<td style="text-align:center">'+deltaBadge(dShare,true)+'</td>'
+      +'<td style="text-align:center"><a href="'+mlLink+'" target="_blank" style="color:var(--ml-blue2);text-decoration:none">Ver</a></td>'
+      +'</tr>';
+  });
   document.getElementById('tbl-catalogo').innerHTML=h+'</tbody>';
-
-
-
 }
 
 
@@ -3521,7 +3612,11 @@ function renderVisitas(){
   var itemMap={};
   (RAW.visitas_items||[]).filter(function(r){return ids.includes(String(r.cust_id));}).forEach(function(r){itemMap[r.item_id]={cust_id:r.cust_id,visits:r.visits};});
   var siMap={};
-  (RAW.catalogo_items||[]).filter(function(r){return ids.includes(String(r.cust_id));}).forEach(function(r){siMap[r.item_id]={titulo:r.titulo,si:r.si};});
+  (RAW.catalogo_monthly||[]).filter(function(r){return ids.includes(String(r.cust_id));}).forEach(function(r){
+    if(!siMap[r.item_id])siMap[r.item_id]={titulo:r.titulo||'',si:0};
+    siMap[r.item_id].si+=(Number(r.si)||0);
+    if(!siMap[r.item_id].titulo&&r.titulo)siMap[r.item_id].titulo=r.titulo;
+  });
   var iRows=Object.entries(itemMap).sort(function(a,b){return b[1].visits-a[1].visits;}).slice(0,50);
   var h2='<thead><tr><th>Seller</th><th>Item ID</th><th>T\u00edtulo</th><th>Visitas</th><th>Pedidos (SI)</th><th>Convers\u00e3o</th></tr></thead><tbody>';
   iRows.forEach(function([iid,v]){
@@ -4045,10 +4140,11 @@ def generate():
 
 
 if __name__ == "__main__":
-
-
-
-    generate()
+    _acquire_lock()
+    try:
+        generate()
+    finally:
+        _release_lock()
 
 
 
