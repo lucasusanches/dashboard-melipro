@@ -2243,7 +2243,7 @@ function renderScorecard(){
   var now=new Date(),yr=now.getFullYear(),mo=now.getMonth();
   // Exibe scorecard apenas no mês vigente (MTD ou mês atual selecionado explicitamente)
   var currPeriod='m'+(mo+1);
-  if(state.period!=='month'&&state.period!==currPeriod){if(el)el.innerHTML='';return;}
+  if(state.period!=='month'&&state.period!=='mtd'&&state.period!==currPeriod){if(el)el.innerHTML='';return;}
   var meses=[fmtMonth(yr,mo)];
   var diasP=now.getDate()-1;
   var pmY=mo===0?yr-1:yr,pmM=mo===0?11:mo-1,pmStr=fmtMonth(pmY,pmM);
