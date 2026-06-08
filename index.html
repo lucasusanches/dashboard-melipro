@@ -2659,14 +2659,10 @@ function renderPandora(){
   // Investimento período anterior — mesmos dias quando MTD, mês completo quando fechado
   var prevInv=0;
   var invLbl=pc.d1Label||'MoM';
-  if(pc.type==='mtd'&&pc.diasPassados>0){
-    // MTD: prorate pelo mesmo nº de dias (ex: 1-7 mai vs 1-7 jun)
-    var _now=new Date();var _pmDIM=new Date(_now.getFullYear(),_now.getMonth(),0).getDate();
-    var _pmRaw=0;
-    (RAW.pandora_financeiro||[])
-      .filter(function(r){return ids.includes(String(r.cust_id))&&(pc.prevMoM||[]).includes(r.mes);})
-      .forEach(function(r){_pmRaw+=(Number(r.rebate_invest)||0);});
-    prevInv=_pmRaw*(pc.diasPassados/_pmDIM);
+  if(pc.type==='mtd'&&pc.diasPassados>0&&pc.prevMoMDailyRange){
+    // MTD: usa dados diários (pre_acordo + dod) para consistência com aba Investimentos
+    prevInv=sumDailyFromData(RAW.investimentos_daily,pc.prevMoMDailyRange[0],pc.prevMoMDailyRange[1],'pre_acordo')
+           +sumDailyFromData(RAW.investimentos_daily,pc.prevMoMDailyRange[0],pc.prevMoMDailyRange[1],'dod');
   }else{
     var mTPrev=pc.prevMoM||pc.prevQoQ||[];
     (RAW.pandora_financeiro||[])
