@@ -2572,15 +2572,13 @@ function renderPandora(){
   // VC lookup by item_id
   var vcMap={};
   (vcSrc||[]).forEach(function(v){vcMap[v.item_id]=v;});
-  // Camp lookup: elegibilidade e optin
-  var campMap={};
+  // Elegibilidade = item está em pandora_items (já filtrado por P-MLB17513056 ativo)
+  // Optin = item tem preço ativo em LK_ITE_ITEM_PRICES (pandora_camp.optin)
+  var optinSet={};
   (campSrc||[]).filter(function(r){return ids.includes(String(r.cust_id));})
-    .forEach(function(r){
-      var iid=String(r.item_id);
-      if(!campMap[iid])campMap[iid]={elegivel:0,optin:0};
-      if(r.elegivel)campMap[iid].elegivel=1;
-      if(r.optin)campMap[iid].optin=1;
-    });
+    .forEach(function(r){if(r.optin)optinSet[String(r.item_id)]=1;});
+  // mantém campMap como fallback para compatibilidade
+  var campMap={};
   // Financeiro: soma por seller+item nos meses do periodo
   var fin={};
   (RAW.pandora_financeiro||[])
@@ -2616,9 +2614,8 @@ function renderPandora(){
       var tipoLbl=TYPE_LABELS[r.tipo]||r.tipo||'-';
       var vcCls=vc.vc_final!=null?(vc.vc_final>=3?'tag-pos':vc.vc_final>=1?'dp':'tag-neg'):'dn0';
       var dcCls=vc.dc_atual!=null?(vc.dc_atual>=5?'tag-pos':vc.dc_atual>=2?'dp':'tag-neg'):'dn0';
-      var cp=campMap[String(r.item_id)]||{elegivel:0,optin:0};
-      var eligBadge=cp.elegivel?'<span class="tag-pos">Sim</span>':'<span class="tag-neg">Não</span>';
-      var optBadge=cp.optin?'<span class="tag-pos">Sim</span>':'<span class="dn0">Não</span>';
+      var eligBadge='<span class="tag-pos">Sim</span>';
+      var optBadge=optinSet[String(r.item_id)]?'<span class="tag-pos">Sim</span>':'<span class="dn0">Não</span>';
       h+='<tr>'
         +'<td>'+sellerLabel(r.cust_id)+'</td>'
         +'<td><span class="badge">'+tipoLbl+'</span></td>'
