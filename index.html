@@ -2661,7 +2661,7 @@ function renderPandora(){
   var invLbl=pc.d1Label||'MoM';
   if(pc.type==='mtd'&&pc.diasPassados>0){
     // MTD: prorate pelo mesmo nº de dias (ex: 1-7 mai vs 1-7 jun)
-    var _pmDIM=new Date(now.getFullYear(),now.getMonth(),0).getDate();
+    var _now=new Date();var _pmDIM=new Date(_now.getFullYear(),_now.getMonth(),0).getDate();
     var _pmRaw=0;
     (RAW.pandora_financeiro||[])
       .filter(function(r){return ids.includes(String(r.cust_id))&&(pc.prevMoM||[]).includes(r.mes);})
