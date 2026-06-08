@@ -2634,12 +2634,15 @@ function renderPandora(){
     });
   document.getElementById('tbl-pandora-items').innerHTML=h+'</tbody>';
   // KPI cards
-  var totInv=0,totGMV=0,dcSum=0,vcSum=0,dcCnt=0,vcCnt=0;
+  // totInv/totGMV: soma TODO o pandora_financeiro do período (inclui itens históricos
+  // que saíram da campanha) — igual ao comportamento original, independente de pandora_items
+  var totInv=0,totGMV=0;
+  Object.values(fin).forEach(function(fv){totInv+=fv.rebate_invest;totGMV+=fv.gmv;});
+  // DC/VC: ponderado apenas pelos itens ativos (com preço conhecido)
+  var dcSum=0,vcSum=0,dcCnt=0,vcCnt=0;
   items.forEach(function(r){
     var fk=String(r.cust_id)+'_'+r.item_id;
     var fv=fin[fk]||{gmv:0,rebate_invest:0};
-    totInv+=fv.rebate_invest;
-    totGMV+=fv.gmv;
     var vc=vcMap[r.item_id]||{};
     if(vc.dc_atual!=null&&fv.gmv>0){dcSum+=vc.dc_atual*fv.gmv;dcCnt+=fv.gmv;}
     if(vc.vc_final!=null&&fv.gmv>0){vcSum+=vc.vc_final*fv.gmv;vcCnt+=fv.gmv;}
