@@ -2656,13 +2656,23 @@ function renderPandora(){
   var vcMCls=vcMedia!=null?(vcMedia>=3?'tag-pos':vcMedia>=1?'dp':'tag-neg'):'dn0';
   var roas=totInv>0?+(totGMV/totInv).toFixed(2):null;
   var roasCls=roas!=null?(roas>=10?'tag-pos':roas>=5?'dp':'tag-neg'):'dn0';
-  // Investimento período anterior (MoM/QoQ) — usando pandora_financeiro histórico
-  var mTPrev=pc.prevMoM||pc.prevQoQ||[];
+  // Investimento período anterior — mesmos dias quando MTD, mês completo quando fechado
   var prevInv=0;
-  (RAW.pandora_financeiro||[])
-    .filter(function(r){return ids.includes(String(r.cust_id))&&mTPrev.includes(r.mes);})
-    .forEach(function(r){prevInv+=(Number(r.rebate_invest)||0);});
   var invLbl=pc.d1Label||'MoM';
+  if(pc.type==='mtd'&&pc.diasPassados>0){
+    // MTD: prorate pelo mesmo nº de dias (ex: 1-7 mai vs 1-7 jun)
+    var _pmDIM=new Date(now.getFullYear(),now.getMonth(),0).getDate();
+    var _pmRaw=0;
+    (RAW.pandora_financeiro||[])
+      .filter(function(r){return ids.includes(String(r.cust_id))&&(pc.prevMoM||[]).includes(r.mes);})
+      .forEach(function(r){_pmRaw+=(Number(r.rebate_invest)||0);});
+    prevInv=_pmRaw*(pc.diasPassados/_pmDIM);
+  }else{
+    var mTPrev=pc.prevMoM||pc.prevQoQ||[];
+    (RAW.pandora_financeiro||[])
+      .filter(function(r){return ids.includes(String(r.cust_id))&&mTPrev.includes(r.mes);})
+      .forEach(function(r){prevInv+=(Number(r.rebate_invest)||0);});
+  }
   function _invDeltaHtml(curr,prev){
     if(!prev||!curr) return '<span class="dn0">—</span>';
     var d=(curr-prev)/prev*100,cls=d>=0?'dp':'dn',arr=d>=0?'▲':'▼';
