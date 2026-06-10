@@ -980,7 +980,7 @@ def q_visitas_items():
           AND TIM_DAY >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 YEAR), YEAR)
           AND TIM_DAY < CURRENT_DATE()
         GROUP BY 1, 2, 3
-        QUALIFY ROW_NUMBER() OVER (PARTITION BY CUS_CUST_ID_SEL, FORMAT_DATE('%Y-%m', TIM_DAY)
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY CUS_CUST_ID_SEL, mes
                                    ORDER BY SUM(QTY_PAGEVIEWS) DESC) <= 200
         ORDER BY 1, 2, 4 DESC
     """)
