@@ -86,15 +86,8 @@ def _release_lock():
 
 
 
-# Ensure UTF-8 output on Windows
-
-
-
-if sys.stdout.encoding != "utf-8":
-
-
-
-    sys.stdout.reconfigure(encoding="utf-8")
+# Ensure UTF-8 output on Windows + line_buffering para flush imediato em redirecionamento
+sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
 
 
 
@@ -154,6 +147,22 @@ SELLERS = {
 
 
 
+    202725990:  {"name": "Casa Aberta",              "group": "Casa Aberta"},
+
+
+
+    701145835:  {"name": "Casa Cab",                 "group": "Casa Aberta"},
+
+
+
+    1428239362: {"name": "Fidelitá",                 "group": "Fidelitá"},
+
+
+
+    760931003:  {"name": "Nesher",                   "group": "Nesher"},
+
+
+
 }
 
 
@@ -167,6 +176,22 @@ CUST_IDS = list(SELLERS.keys())
 
 
 IDS_STR  = ",".join(str(x) for x in CUST_IDS)
+
+# Promoções usadas na aba Catálogo (disponibilidade + optin)
+PROMO_IDS = [
+    'P-MLB17513056',   # Pré-Acordo (lojas originais + novas a partir de jun/26)
+    'P-MLB17513052',   # Pré-Acordo (Casa Aberta/Cab/Fidelitá/Nesher — mai/26, válido até 19/07/26)
+    'P-MLB17609074', 'P-MLB17609076', 'P-MLB17609088',
+    'P-MLB17611022', 'P-MLB17611024', 'P-MLB17611036',
+    'P-MLB17611042', 'P-MLB17611044',
+    'P-MLB17613004', 'P-MLB17613006',
+]
+PROMO_IDS_STR = "'" + "', '".join(PROMO_IDS) + "'"
+
+# IDs exclusivos de pré-acordo (sem as campanhas de catálogo)
+# Quando P-MLB17513052 expirar (após 19/07/26) basta removê-lo daqui e de PROMO_IDS
+PRE_ACORDO_IDS = ['P-MLB17513056', 'P-MLB17513052']
+PRE_ACORDO_IDS_STR = "'" + "', '".join(PRE_ACORDO_IDS) + "'"
 
 
 
@@ -210,13 +235,13 @@ def run(sql: str) -> list[dict]:
     import random
     for attempt in range(5):
         try:
-            time.sleep(8 + random.uniform(0, 4))
+            time.sleep(2 + random.uniform(0, 1))   # era 8-12s; 2-3s é suficiente
             rows = list(client.query(sql).result())
             return [dict(r) for r in rows]
         except Exception as e:
             if ('quotaExceeded' in str(e) or 'Quota exceeded' in str(e)) and attempt < 4:
                 wait = 60 * (attempt + 1)
-                print(f'  Cota BQ, aguardando {wait}s (tentativa {attempt+1}/5)...')
+                print(f'  Cota BQ, aguardando {wait}s (tentativa {attempt+1}/5)...', flush=True)
                 time.sleep(wait)
             else:
                 raise
@@ -437,7 +462,7 @@ def q_investimentos_daily():
             SELECT DISTINCT CUS_CUST_ID_SEL, CAST(ITE_ITEM_ID AS STRING) AS item_id
             FROM `meli-bi-data.WHOWNER.LK_MKP_CAMPAIGN_ITEM_OPTIN`
             WHERE SIT_SITE_ID = 'MLB'
-              AND PROMOTION_ID = 'P-MLB17513056'
+              AND PROMOTION_ID IN ({PRE_ACORDO_IDS_STR})
               AND CUS_CUST_ID_SEL IN ({IDS_STR})
               AND ITEM_CANDIDATE_FLG = TRUE
               AND ITE_ITEM_ID != 4015179919
@@ -609,7 +634,7 @@ def q_investimentos_monthly():
             SELECT DISTINCT CUS_CUST_ID_SEL, CAST(ITE_ITEM_ID AS STRING) AS item_id
             FROM `meli-bi-data.WHOWNER.LK_MKP_CAMPAIGN_ITEM_OPTIN`
             WHERE SIT_SITE_ID = 'MLB'
-              AND PROMOTION_ID = 'P-MLB17513056'
+              AND PROMOTION_ID IN ({PRE_ACORDO_IDS_STR})
               AND CUS_CUST_ID_SEL IN ({IDS_STR})
               AND ITEM_CANDIDATE_FLG = TRUE
               AND ITE_ITEM_ID != 4015179919
@@ -619,7 +644,7 @@ def q_investimentos_monthly():
             FORMAT_DATE('%Y-%m', d.ORD_CLOSED_DT) AS mes,
             d.CUS_CUST_ID_SEL                      AS cust_id,
             ROUND(SUM(d.GMV_LC), 2)                AS gmv,
-            -- Pré-Acordo: somente itens da campanha P-MLB17513056
+            -- Pré-Acordo: itens das campanhas pré-acordo (P-MLB17513056 / P-MLB17513052)
             ROUND(SUM(CASE WHEN d.DXI_CAMPAIGN_SUBTYPE = 'PRE_ACORDO' AND p.item_id IS NOT NULL
                            THEN COALESCE(d.DXI_INVESTMENT_LC,0) ELSE 0 END),2) AS pre_acordo,
             ROUND(SUM(COALESCE(d.DOD_INVESTMENT_LC,0)),2)                       AS dod,
@@ -661,6 +686,41 @@ def q_investimentos_monthly():
 
 
 
+
+
+def q_catalogo_campaigns():
+    """Disponibilidade (DM_CAMPAIGN_ID_ITEM) e optin confirmado (LK_ITE_ITEM_PRICES) por item."""
+    return run(f"""
+        WITH camp_avail AS (
+            SELECT DISTINCT
+                CAST(SELLER_ID   AS STRING) AS cust_id,
+                CAST(ITE_ITEM_ID AS STRING) AS item_id
+            FROM `meli-bi-data.WHOWNER.DM_CAMPAIGN_ID_ITEM`
+            WHERE SIT_SITE_ID = 'MLB'
+              AND CAST(SELLER_ID AS INT64) IN ({IDS_STR})
+              AND PROMOTION_ID IN ({PROMO_IDS_STR})
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY PROMOTION_ID, SELLER_ID, ITE_ITEM_ID
+                ORDER BY TIM_DATE DESC
+            ) = 1
+        ),
+        optin_conf AS (
+            SELECT DISTINCT CAST(ITE_ITEM_ID AS STRING) AS item_id
+            FROM `meli-bi-data.WHOWNER.LK_ITE_ITEM_PRICES`
+            WHERE SIT_SITE_ID = 'MLB'
+              AND CAM_CAMPAIGN_ID IN ({PROMO_IDS_STR})
+              AND ITE_ITEM_PRICE_API_STATUS = 'ACTIVE'
+        )
+        SELECT
+            c.cust_id,
+            c.item_id,
+            1                                                       AS in_campaign,
+            MAX(CASE WHEN o.item_id IS NOT NULL THEN 1 ELSE 0 END) AS optin
+        FROM camp_avail c
+        LEFT JOIN optin_conf o ON c.item_id = o.item_id
+        GROUP BY 1, 2, 3
+        ORDER BY 1, 2
+    """)
 
 
 def q_buybox_monthly():
@@ -744,9 +804,21 @@ def q_buybox_monthly():
 
 
 def q_catalogo_monthly():
-    """Top 20 itens por seller (ranking últimos 3 meses) — agregação mensal, janela 25 meses."""
+    """Top 50 itens por seller (ranking últimos 3 meses) — agregação mensal + GMV total seller."""
     return run(f"""
-        WITH top_items AS (
+        WITH all_seller_gmv AS (
+            SELECT
+                FORMAT_DATE('%Y-%m', ORD_CLOSED_DT) AS mes,
+                CUS_CUST_ID_SEL                      AS cust_id,
+                ROUND(SUM(GMV_LC), 2)                AS seller_total_gmv
+            FROM {TABLE}
+            WHERE CUS_CUST_ID_SEL IN ({IDS_STR})
+              AND GMV_FLG = TRUE
+              AND ORD_CLOSED_DT >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 YEAR), YEAR)
+              AND ORD_CLOSED_DT < CURRENT_DATE()
+            GROUP BY 1, 2
+        ),
+        top_items AS (
             SELECT CUS_CUST_ID_SEL, ITE_ITEM_ID, MAX(ITE_ITEM_TITLE) AS titulo
             FROM {TABLE}
             WHERE CUS_CUST_ID_SEL IN ({IDS_STR})
@@ -757,7 +829,7 @@ def q_catalogo_monthly():
             QUALIFY ROW_NUMBER() OVER (
                 PARTITION BY CUS_CUST_ID_SEL
                 ORDER BY SUM(GMV_LC) DESC
-            ) <= 20
+            ) <= 50
         )
         SELECT
             FORMAT_DATE('%Y-%m', d.ORD_CLOSED_DT)    AS mes,
@@ -766,24 +838,40 @@ def q_catalogo_monthly():
             t.titulo,
             ROUND(SUM(d.GMV_LC), 2)                   AS gmv,
             SUM(d.SI)                                 AS si,
-            MAX(COALESCE(d.VERTICAL, 'OUTROS'))        AS vertical
+            MAX(COALESCE(d.VERTICAL, 'OUTROS'))        AS vertical,
+            g.seller_total_gmv
         FROM {TABLE} d
         INNER JOIN top_items t
             ON d.CUS_CUST_ID_SEL = t.CUS_CUST_ID_SEL
            AND d.ITE_ITEM_ID     = t.ITE_ITEM_ID
+        LEFT JOIN all_seller_gmv g
+            ON FORMAT_DATE('%Y-%m', d.ORD_CLOSED_DT) = g.mes
+           AND d.CUS_CUST_ID_SEL = g.cust_id
         WHERE d.CUS_CUST_ID_SEL IN ({IDS_STR})
           AND d.GMV_FLG = TRUE
           AND d.ORD_CLOSED_DT >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 YEAR), YEAR)
           AND d.ORD_CLOSED_DT < CURRENT_DATE()
-        GROUP BY 1, 2, 3, 4
+        GROUP BY 1, 2, 3, 4, 8
         ORDER BY 2, 3, 1
     """)
 
 
 def q_catalogo_daily():
-    """Top 20 itens por seller — agregação diária, últimos 90 dias."""
+    """Top 50 itens por seller — agregação diária, últimos 90 dias + GMV total seller."""
     return run(f"""
-        WITH top_items AS (
+        WITH all_seller_daily_gmv AS (
+            SELECT
+                CAST(ORD_CLOSED_DT AS STRING) AS dia,
+                CUS_CUST_ID_SEL               AS cust_id,
+                ROUND(SUM(GMV_LC), 2)         AS seller_total_gmv
+            FROM {TABLE}
+            WHERE CUS_CUST_ID_SEL IN ({IDS_STR})
+              AND GMV_FLG = TRUE
+              AND ORD_CLOSED_DT >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
+              AND ORD_CLOSED_DT < CURRENT_DATE()
+            GROUP BY 1, 2
+        ),
+        top_items AS (
             SELECT CUS_CUST_ID_SEL, ITE_ITEM_ID
             FROM {TABLE}
             WHERE CUS_CUST_ID_SEL IN ({IDS_STR})
@@ -794,7 +882,7 @@ def q_catalogo_daily():
             QUALIFY ROW_NUMBER() OVER (
                 PARTITION BY CUS_CUST_ID_SEL
                 ORDER BY SUM(GMV_LC) DESC
-            ) <= 20
+            ) <= 50
         )
         SELECT
             CAST(d.ORD_CLOSED_DT AS STRING)           AS dia,
@@ -802,16 +890,20 @@ def q_catalogo_daily():
             d.ITE_ITEM_ID                             AS item_id,
             ROUND(SUM(d.GMV_LC), 2)                   AS gmv,
             SUM(d.SI)                                 AS si,
-            MAX(COALESCE(d.VERTICAL, 'OUTROS'))        AS vertical
+            MAX(COALESCE(d.VERTICAL, 'OUTROS'))        AS vertical,
+            g.seller_total_gmv
         FROM {TABLE} d
         INNER JOIN top_items t
             ON d.CUS_CUST_ID_SEL = t.CUS_CUST_ID_SEL
            AND d.ITE_ITEM_ID     = t.ITE_ITEM_ID
+        LEFT JOIN all_seller_daily_gmv g
+            ON CAST(d.ORD_CLOSED_DT AS STRING) = g.dia
+           AND d.CUS_CUST_ID_SEL = g.cust_id
         WHERE d.CUS_CUST_ID_SEL IN ({IDS_STR})
           AND d.GMV_FLG = TRUE
           AND d.ORD_CLOSED_DT >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
           AND d.ORD_CLOSED_DT < CURRENT_DATE()
-        GROUP BY 1, 2, 3
+        GROUP BY 1, 2, 3, 7
         ORDER BY 1, 2, 3
     """)
 
@@ -892,7 +984,7 @@ def q_visitas_items():
 
 def q_bpc_aurora():
     """BPC e Aurora: competitividade de preco por item -- BT_COM_FAVORABILITY + LK_PRICING_TOOLS_BPC_AURORA_ITEMS_AUDIT."""
-    ids_q = "'383523670','794123311','568773774','70123968','2355501248','638325656','1802758219','700583148'"
+    ids_q = "'383523670','794123311','568773774','70123968','2355501248','638325656','1802758219','700583148','202725990','701145835','1428239362','760931003'"
     return run(f"""
         WITH last_day AS (
             SELECT MAX(TIM_DAY) AS max_day
@@ -1000,10 +1092,12 @@ def q_campanhas():
 
 
 def q_pandora_items():
-    """Items da campanha P-MLB17513056 com precos de LK_MKP_PROMOTIONS_OFFERS.
-    preco_negociado = INITIAL_PRICE - DISCOUNT_SELLER (o que o seller recebe + rebate ML)
-    rebate          = DISCOUNT_MELI_AMOUNT (aporte MeliPro)
-    preco_final     = INITIAL_PRICE - DISCOUNT_SELLER - DISCOUNT_MELI (preco ao comprador)
+    """Items ATUALMENTE elegíveis na campanha P-MLB17513056.
+    Usa QUALIFY ROW_NUMBER() para pegar o registro mais recente por (seller, item) e
+    garantir que apenas itens com ITEM_CANDIDATE_FLG=TRUE na data mais recente sejam exibidos.
+    preco_negociado = INITIAL_PRICE - DISCOUNT_SELLER
+    rebate          = DISCOUNT_MELI_AMOUNT
+    preco_final     = INITIAL_PRICE - DISCOUNT_SELLER - DISCOUNT_MELI
     """
     return run(f"""
         WITH optin AS (
@@ -1015,10 +1109,12 @@ def q_pandora_items():
             WHERE o.SIT_SITE_ID = 'MLB'
               AND o.PROMOTION_ID = 'P-MLB17513056'
               AND o.CUS_CUST_ID_SEL IN ({IDS_STR})
-              AND o.ITEM_CANDIDATE_FLG = TRUE
               AND o.ITE_ITEM_ID != 4015179919
-              AND o.DS >= '2026-01-01'
-            GROUP BY 1, 2, 3
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY o.CUS_CUST_ID_SEL, o.ITE_ITEM_ID
+                ORDER BY o.DS DESC
+            ) = 1
+              AND o.ITEM_CANDIDATE_FLG = TRUE
         ),
         offers AS (
             SELECT
@@ -1090,6 +1186,36 @@ def q_pandora_financeiro():
 
 
 
+def q_pandora_camp():
+    """Elegibilidade e optin atuais na campanha P-MLB17513056 (estado ao vivo).
+    Usado para o mês corrente; mai/26 usa snapshot congelado (snapshot_mai26.json).
+    """
+    return run(f"""
+        WITH camp_avail AS (
+            SELECT DISTINCT CAST(SELLER_ID AS STRING) AS cust_id,
+                            CAST(ITE_ITEM_ID AS STRING) AS item_id
+            FROM `meli-bi-data.WHOWNER.DM_CAMPAIGN_ID_ITEM`
+            WHERE SIT_SITE_ID = 'MLB'
+              AND CAST(SELLER_ID AS INT64) IN ({IDS_STR})
+              AND PROMOTION_ID = 'P-MLB17513056'
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY SELLER_ID, ITE_ITEM_ID ORDER BY TIM_DATE DESC) = 1
+        ),
+        optin_conf AS (
+            SELECT DISTINCT CAST(ITE_ITEM_ID AS STRING) AS item_id
+            FROM `meli-bi-data.WHOWNER.LK_ITE_ITEM_PRICES`
+            WHERE SIT_SITE_ID = 'MLB'
+              AND CAM_CAMPAIGN_ID = 'P-MLB17513056'
+              AND ITE_ITEM_PRICE_API_STATUS = 'ACTIVE'
+        )
+        SELECT c.cust_id, c.item_id, 1 AS elegivel,
+               MAX(CASE WHEN o.item_id IS NOT NULL THEN 1 ELSE 0 END) AS optin
+        FROM camp_avail c
+        LEFT JOIN optin_conf o ON c.item_id = o.item_id
+        GROUP BY 1, 2, 3
+        ORDER BY 1, 2
+    """)
+
+
 def fetch_vc_pandora(items):
     """Chama Benefits Playground API para cada (item, preco_final, rebate) unico."""
     import urllib.request as _ur
@@ -1131,48 +1257,68 @@ def fetch_vc_pandora(items):
 
 
 def build_dataset() -> dict:
-    print("Consultando BQ...")
-    print("  → Geral mensal...")
-    geral_m  = q_geral_monthly()
-    print("  → Geral diário...")
-    geral_d  = q_geral_daily()
-    print("  → Logística...")
-    log_m    = q_logistica_monthly()
-    print("  -> Logistica diaria...")
-    log_d    = q_logistica_daily()
-    print("  → ADS...")
-    ads_m    = q_ads_monthly()
-    print("  -> ADS diario...")
-    ads_d    = q_ads_daily()
-    print("  → Investimentos...")
-    inv_m    = q_investimentos_monthly()
-    print("  -> Investimentos diario...")
-    inv_d    = q_investimentos_daily()
-    print("  → BuyBox...")
-    bb_m     = q_buybox_monthly()
-    print("  -> Catalogo mensal...")
-    cat_m    = q_catalogo_monthly()
-    print("  -> Catalogo diario...")
-    cat_d    = q_catalogo_daily()
-    print("  -> Reputacao sellers...")
-    rep      = q_seller_reputation()
-    print("  -> Visitas mensal...")
-    vis_m    = q_visitas_monthly()
-    print("  -> Visitas diario...")
-    vis_d    = q_visitas_daily()
-    print("  -> Visitas por item...")
-    vis_i    = q_visitas_items()
-    print("  -> BPC e Aurora...")
-    bpc      = q_bpc_aurora()
-    print("  -> Campanhas...")
-    camp     = q_campanhas()
-    print("  -> Pandora itens...")
-    pand_items = q_pandora_items()
-    print("  -> Pandora financeiro...")
-    pand_fin   = q_pandora_financeiro()
-    print("  -> Pandora VC (Benefits Playground)...")
-    pand_vc    = fetch_vc_pandora(pand_items)
-    print("  Consultas concluídas.")
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    print("Consultando BQ...", flush=True)
+
+    # ── Batch 1: 18 queries independentes em paralelo (4 workers) ────────────
+    _BATCH1 = {
+        'geral_m':  (q_geral_monthly,          'Geral mensal'),
+        'geral_d':  (q_geral_daily,             'Geral diário'),
+        'log_m':    (q_logistica_monthly,       'Logística mensal'),
+        'log_d':    (q_logistica_daily,         'Logística diária'),
+        'ads_m':    (q_ads_monthly,             'ADS mensal'),
+        'ads_d':    (q_ads_daily,               'ADS diário'),
+        'inv_m':    (q_investimentos_monthly,   'Investimentos mensal'),
+        'inv_d':    (q_investimentos_daily,     'Investimentos diário'),
+        'bb_m':     (q_buybox_monthly,          'BuyBox'),
+        'cat_m':    (q_catalogo_monthly,        'Catálogo mensal'),
+        'cat_d':    (q_catalogo_daily,          'Catálogo diário'),
+        'cat_c':    (q_catalogo_campaigns,      'Catálogo campanhas'),
+        'rep':      (q_seller_reputation,       'Reputação'),
+        'vis_m':    (q_visitas_monthly,         'Visitas mensal'),
+        'vis_d':    (q_visitas_daily,           'Visitas diário'),
+        'vis_i':    (q_visitas_items,           'Visitas por item'),
+        'bpc':      (q_bpc_aurora,              'BPC e Aurora'),
+        'camp':     (q_campanhas,               'Campanhas'),
+    }
+    R = {}
+    with ThreadPoolExecutor(max_workers=4) as _ex:
+        _futures = {_ex.submit(fn): (key, lbl) for key, (fn, lbl) in _BATCH1.items()}
+        for _fut in as_completed(_futures):
+            _key, _lbl = _futures[_fut]
+            R[_key] = _fut.result()
+            print(f"  ✓ {_lbl}", flush=True)
+
+    # ── Batch 2: Pandora (3 queries independentes em paralelo) ───────────────
+    print("  → Pandora (itens + financeiro + camp. em paralelo)...", flush=True)
+    _BATCH2 = {
+        'pand_items': (q_pandora_items,      'itens'),
+        'pand_fin':   (q_pandora_financeiro, 'financeiro'),
+        'pand_camp':  (q_pandora_camp,       'camp. Pré-Acordo'),
+    }
+    with ThreadPoolExecutor(max_workers=3) as _ex:
+        _futures = {_ex.submit(fn): (key, lbl) for key, (fn, lbl) in _BATCH2.items()}
+        for _fut in as_completed(_futures):
+            _key, _lbl = _futures[_fut]
+            R[_key] = _fut.result()
+            print(f"  ✓ Pandora {_lbl}", flush=True)
+
+    # ── Pandora VC (depende de pand_items) ───────────────────────────────────
+    print("  → Pandora VC (Benefits Playground)...", flush=True)
+    pand_vc = fetch_vc_pandora(R['pand_items'])
+    print("  Consultas concluídas.", flush=True)
+
+    # aliases para facilitar leitura abaixo
+    geral_m = R['geral_m']; geral_d = R['geral_d']
+    log_m   = R['log_m'];   log_d   = R['log_d']
+    ads_m   = R['ads_m'];   ads_d   = R['ads_d']
+    inv_m   = R['inv_m'];   inv_d   = R['inv_d']
+    bb_m    = R['bb_m'];    cat_m   = R['cat_m']
+    cat_d   = R['cat_d'];   cat_c   = R['cat_c']
+    rep     = R['rep'];     vis_m   = R['vis_m']
+    vis_d   = R['vis_d'];   vis_i   = R['vis_i']
+    bpc     = R['bpc'];     camp    = R['camp']
+    pand_items = R['pand_items']; pand_fin = R['pand_fin']; pand_camp = R['pand_camp']
 
     # Convert date/Decimal to serialisable types; strip surrogate chars from strings
     def clean(obj):
@@ -1187,6 +1333,28 @@ def build_dataset() -> dict:
 
     def clean_rows(rows):
         return [{k: clean(v) for k, v in row.items()} for row in rows]
+
+    # ── Snapshot mai/2026 ────────────────────────────────────────────────────
+    # Congela elegibilidade (pandora_camp) e preços VC (pandora_vc) de mai/26
+    # na primeira execução de junho, antes que os dados de campanha mudem.
+    SNAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "snapshot_mai26.json")
+    if os.path.exists(SNAP_FILE):
+        with open(SNAP_FILE, encoding="utf-8") as _sf:
+            _snap = json.load(_sf)
+        camp_mai26 = _snap.get("pandora_camp_mai26", [])
+        vc_mai26   = _snap.get("pandora_vc_mai26", [])
+        print("  → Snapshot mai/26 carregado.")
+    else:
+        camp_mai26 = clean_rows(pand_camp)
+        vc_mai26   = list(pand_vc)
+        _snap = {
+            "pandora_camp_mai26": camp_mai26,
+            "pandora_vc_mai26":   vc_mai26,
+            "gerado_em": datetime.now().strftime("%d/%m/%Y %H:%M"),
+        }
+        with open(SNAP_FILE, "w", encoding="utf-8") as _sf:
+            json.dump(_snap, _sf, ensure_ascii=False, indent=2)
+        print("  → Snapshot mai/26 salvo pela primeira vez.")
 
     sellers_meta = [
         {"cust_id": cid, "name": info["name"], "group": info["group"]}
@@ -1207,6 +1375,7 @@ def build_dataset() -> dict:
         "buybox_monthly":      clean_rows(bb_m),
         "catalogo_monthly":    clean_rows(cat_m),
         "catalogo_daily":      clean_rows(cat_d),
+        "catalogo_campaigns":  clean_rows(cat_c),
         "seller_reputation":   clean_rows(rep),
         "visitas_monthly":     clean_rows(vis_m),
         "visitas_daily":       clean_rows(vis_d),
@@ -1216,6 +1385,9 @@ def build_dataset() -> dict:
         "pandora_items":        clean_rows(pand_items),
         "pandora_financeiro":   clean_rows(pand_fin),
         "pandora_vc":           pand_vc,
+        "pandora_camp":         clean_rows(pand_camp),
+        "pandora_camp_mai26":   camp_mai26,
+        "pandora_vc_mai26":     vc_mai26,
         "seller_metas":        SELLER_METAS,
     }
 
@@ -1253,6 +1425,18 @@ SELLER_METAS = {
         "meta_op": {"2026-04":500000.0,"2026-05":430998.0},
         "meta_fin": {},
     },
+    "Casa Aberta": {
+        "meta_op": {"2026-05":1369869.0},
+        "meta_fin": {},
+    },
+    "Fidelita": {
+        "meta_op": {"2026-05":464997.0},
+        "meta_fin": {},
+    },
+    "Nesher": {
+        "meta_op": {"2026-05":230000.0},
+        "meta_fin": {},
+    },
 }
 
 # Group name to SELLER_METAS key mapping
@@ -1263,6 +1447,9 @@ GROUP_META_MAP = {
     "Outlet das Fabricas": "Outlet das Fabricas",
     "Moveis Provincia":    "Moveis Provincia",
     "Decorise":            "Decorise",
+    "Casa Aberta":         "Casa Aberta",
+    "Fidelitá":            "Fidelita",
+    "Nesher":              "Nesher",
 }
 
 
@@ -1948,7 +2135,8 @@ td:first-child{text-align:left;font-weight:500}
             <option value="FURNISHING &amp; HOUSEWARE">Furnishing &amp; Houseware</option>
           </select>
         </div>
-        <div class="section-title">&#11088; Top It&ecirc;ns por Seller &mdash; Top 20 por GMV</div>
+        <div id="cat-summary-cards"></div>
+        <div class="section-title">&#11088; Top It&ecirc;ns por Seller &mdash; Top 50 por GMV</div>
         <div class="table-wrap" style="overflow-x:auto"><table id="tbl-catalogo"></table></div>
       </div>
       <div class="tab-content" id="tab-visitas">
@@ -2272,16 +2460,19 @@ function getPeriodConfig(){
   }
   if(p==='q1'){
     var q1m=[yr+'-01',yr+'-02',yr+'-03'],q1py=[(yr-1)+'-01',(yr-1)+'-02',(yr-1)+'-03'];
-    return {type:'q1',gran:'monthly',curr:q1m,prevYoY:q1py,
-      label:'Q1 '+yr,showD1:false,showD2:true,d2Label:'YoY',chartGran:'monthly',chartMonths:q1m};
+    var q4pq=[(yr-1)+'-10',(yr-1)+'-11',(yr-1)+'-12'];
+    return {type:'q1',gran:'monthly',curr:q1m,prevYoY:q1py,prevQoQ:q4pq,
+      label:'Q1 '+yr,showD1:true,showD2:true,d1Label:'QoQ',d2Label:'YoY',chartGran:'monthly',chartMonths:q1m};
   }
   if(p==='q2'){
     var capQ2=Math.min(mo,5),q2m=[];
     for(var qi2=3;qi2<=capQ2;qi2++) q2m.push(fmtMonth(yr,qi2));
     if(!q2m.length) q2m=[fmtMonth(yr,3)];
     var q2py=q2m.map(function(m){return fmtMonth(yr-1,parseInt(m.slice(5))-1);});
-    return {type:'q2',gran:'monthly',curr:q2m,prevYoY:q2py,
-      label:'Q2 '+yr,showD1:false,showD2:true,d2Label:'YoY',chartGran:'monthly',chartMonths:q2m};
+    var q1full=[yr+'-01',yr+'-02',yr+'-03'];
+    var prevQoQ_q2=q1full.slice(0,q2m.length);
+    return {type:'q2',gran:'monthly',curr:q2m,prevYoY:q2py,prevQoQ:prevQoQ_q2,
+      label:'Q2 '+yr,showD1:true,showD2:true,d1Label:'QoQ',d2Label:'YoY',chartGran:'monthly',chartMonths:q2m};
   }
   if(p==='q3'){
     var capQ3=Math.min(mo,8),q3m=[];
@@ -2303,9 +2494,11 @@ function getPeriodConfig(){
   if(mMatch){
     var mNum=parseInt(mMatch[1])-1,mStr=fmtMonth(yr,mNum),pyStr=fmtMonth(yr-1,mNum);
     var pmMes=mNum===0?[yr-1,11]:[yr,mNum-1],pmStrM=fmtMonth(pmMes[0],pmMes[1]);
+    var lastDayM=new Date(yr,mNum+1,0).getDate();
+    var mChartEnd=mNum<mo?mStr+'-'+String(lastDayM).padStart(2,'0'):d1;
     var cfg={type:p,gran:'monthly',curr:[mStr],prevMoM:[pmStrM],prevYoY:[pyStr],
       label:MONTH_NAMES[mNum],showD1:true,showD2:true,d1Label:'MoM',d2Label:'YoY',
-      chartGran:'monthly',chartMonths:[mStr]};
+      chartGran:'daily',chartStart:mStr+'-01',chartEnd:mChartEnd};
     if(mNum===mo){
       var diasPM=now.getDate()-1,pyDIMm=new Date(yr-1,mNum+1,0).getDate();
       var pmDIMm=new Date(pmMes[0],pmMes[1]+1,0).getDate();
@@ -2927,7 +3120,7 @@ function renderGeral(){
     +'<th style="'+thS+'text-align:center;min-width:70px">YoY%</th>'
     +'<th style="'+thS+'text-align:right;min-width:110px">Meta Op.</th>'
     +'<th style="'+thS+'text-align:center;min-width:70px">% Meta</th>'
-    +'<th style="'+thS+'text-align:center;min-width:90px">Status</th>'
+    +'<th style="'+thS+'text-align:right;min-width:100px">Projeção</th>'
     +'<th style="'+thS+'text-align:right;min-width:70px">SI</th>'
     +'<th style="'+thS+'text-align:right;min-width:80px">ASP</th>'
     +'<th style="'+thS+'text-align:center;min-width:65px;border-radius:0 6px 0 0">Share</th>'
@@ -2936,7 +3129,10 @@ function renderGeral(){
   var GROUP_META={'COLIBRI':'COLIBRI','KAPPESBERG':'KAPPESBERG','LINEA':'LINEA',
     'Outlet das Fábricas':'Outlet das Fabricas',
     'Móveis Província':'Moveis Provincia',
-    'Decorise':'Decorise'};
+    'Decorise':'Decorise',
+    'Casa Aberta':'Casa Aberta',
+    'Fidelitá':'Fidelita',
+    'Nesher':'Nesher'};
   function getMetaForPeriod(groupName,meses){
     var mk=GROUP_META[groupName];
     if(!mk||!SMETAS[mk]) return 0;
@@ -2956,6 +3152,12 @@ function renderGeral(){
     var c=pct>=0?'var(--green)':'var(--red)',arr=pct>=0?'▲':'▼';
     return td+'color:'+c+'">'+arr+' '+Math.abs(pct).toFixed(1)+'%</td>';
   }
+  // Fator de projeção — só faz sentido no MTD
+  var _now=new Date();
+  var _diasMes=new Date(_now.getFullYear(),_now.getMonth()+1,0).getDate();
+  var _diasP=pc.diasPassados||(_now.getDate()-1);
+  var fatorProjSel=(pc.type==='mtd'&&_diasP>0)?_diasMes/_diasP:null;
+
   var entries=Object.entries(byS).sort(function(a,b){return b[1].gmv-a[1].gmv;});
   entries.forEach(function([cid,v],ri){
     var asp=v.si?v.gmv/v.si:0,share=tG?(v.gmv/tG)*100:0;
@@ -2967,11 +3169,11 @@ function renderGeral(){
     var momPct=pMom?+((v.gmv-pMom)/pMom*100).toFixed(1):null;
     var pYoy=(byPrevY[cid]?.gmv)||0;
     var yoyPct=pYoy?+((v.gmv-pYoy)/pYoy*100).toFixed(1):null;
-    var statusHtml;
-    if(metaPct===null){statusHtml='<span style="color:var(--muted);font-size:11px">—</span>';}
-    else if(metaPct>=100){statusHtml='<span style="background:#D1FAE5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:10px">✓ Meta</span>';}
-    else if(metaPct>=80){statusHtml='<span style="background:#FEF3C7;color:#92400E;font-size:10px;font-weight:700;padding:3px 8px;border-radius:10px">⚡ Em curso</span>';}
-    else{statusHtml='<span style="background:#FEE2E2;color:#991B1B;font-size:10px;font-weight:700;padding:3px 8px;border-radius:10px">✗ Abaixo</span>';}
+    var projV=fatorProjSel?v.gmv*fatorProjSel:null;
+    var projPct=projV&&metaV?+(projV/metaV*100).toFixed(1):null;
+    var projHtml=projV
+      ?fmtBRL(projV)+(projPct!=null?' <span class="'+metaClass(projPct)+'" style="font-size:10px">'+projPct+'%</span>':'')
+      :'—';
     var bg=ri%2===0?'var(--card)':'#f7f8fa';
     var td='border-bottom:1px solid var(--border);padding:7px 8px;font-size:12px;';
     h+='<tr style="background:'+bg+'">'
@@ -2980,7 +3182,7 @@ function renderGeral(){
       +deltaCell(momPct)+deltaCell(yoyPct)
       +'<td style="'+td+'text-align:right;color:var(--muted)">'+(metaV?fmtBRL(metaV):'—')+'</td>'
       +'<td style="'+td+'text-align:center">'+(metaPct!=null?'<span class="'+metaClass(metaPct)+'">'+metaPct+'%</span>':'—')+'</td>'
-      +'<td style="'+td+'text-align:center">'+statusHtml+'</td>'
+      +'<td style="'+td+'text-align:right">'+projHtml+'</td>'
       +'<td style="'+td+'text-align:right;color:var(--muted)">'+fmtNum(v.si)+'</td>'
       +'<td style="'+td+'text-align:right;color:var(--muted)">'+fmtBRL(asp)+'</td>'
       +'<td style="'+td+'text-align:center"><span class="badge">'+fmtPct(share)+'</span></td>'
@@ -3077,17 +3279,19 @@ function renderAds(){
       yoyMet={roas:yInv?yGmvA/yInv:0,acos:yGmvA?yInv/yGmvA*100:0,adsgmv:yGmvT?yGmvA/yGmvT*100:0,takeRate:null};
     } else if(pc.prevYoY){yoyMet=calcMetrics(pc.prevYoY);}
   }
-  function ppCard(label,value,fmtFn,mV,yV,lowerBetter){
+  function ppCard(label,value,fmtFn,mV,yV,lowerBetter,unit){
+    var u=unit||'pp';var decimals=u==='x'?2:1;
+    var lm=pc.d1Label||'MoM',ly='YoY';
     var dh='';
-    if(mV!=null){var d=+(value-(mV||0)).toFixed(1),good=lowerBetter?d<0:d>0;dh+='<span class="'+(good?'dp':'dn')+'">MoM: '+(d>0?'\u25b2':'\u25bc')+Math.abs(d).toFixed(1)+'pp</span> ';}
-    if(yV!=null){var d2=+(value-(yV||0)).toFixed(1),good2=lowerBetter?d2<0:d2>0;dh+='<span class="'+(good2?'dp':'dn')+'">YoY: '+(d2>0?'\u25b2':'\u25bc')+Math.abs(d2).toFixed(1)+'pp</span>';}
+    if(mV!=null){var d=+(value-(mV||0)).toFixed(decimals),good=lowerBetter?d<0:d>0;dh+='<span class="'+(good?'dp':'dn')+'">'+lm+': '+(d>0?'\u25b2':'\u25bc')+Math.abs(d).toFixed(decimals)+u+'</span> ';}
+    if(yV!=null){var d2=+(value-(yV||0)).toFixed(decimals),good2=lowerBetter?d2<0:d2>0;dh+='<span class="'+(good2?'dp':'dn')+'">'+ly+': '+(d2>0?'\u25b2':'\u25bc')+Math.abs(d2).toFixed(decimals)+u+'</span>';}
     if(!dh)dh='<span class="dn0">\u2014</span>';
     return '<div class="kpi-card"><div class="kpi-label">'+label+'</div><div class="kpi-value">'+fmtFn(value)+'</div><div class="kpi-delta">'+dh+'</div></div>';
   }
   document.getElementById('kpi-ads').innerHTML=
     kpiCard('Investimento ADS',fmtBRL(invV),pc,invK.d1,invK.d2)+
     kpiCard('GMV via ADS',fmtBRL(gmvAdsV),pc,gmvAdsK.d1,gmvAdsK.d2)+
-    ppCard('ROAS',roas,fmtDec,momMet?momMet.roas:null,yoyMet?yoyMet.roas:null,false)+
+    ppCard('ROAS',roas,fmtDec,momMet?momMet.roas:null,yoyMet?yoyMet.roas:null,false,'x')+
     ppCard('ACOS',acos,fmtPct,momMet?momMet.acos:null,yoyMet?yoyMet.acos:null,true)+
     ppCard('ADS/GMV%',adsgmv,fmtPct,momMet?momMet.adsgmv:null,yoyMet?yoyMet.adsgmv:null,false)+
     ppCard('Take Rate ADS',takeRate,fmtPct,momMet?momMet.takeRate:null,yoyMet?yoyMet.takeRate:null,false);
@@ -3154,17 +3358,56 @@ function renderInvestimentos(){
   var gCupons=vCpC+vCpM;
   var gOutras=vSad+vAut+vPMc+vPM1+vPix;
   var invTotal=gPre+gOutras+gCupons;
-  function _kpi(lbl,val,sub){return '<div class="kpi-card"><div class="kpi-label">'+lbl+'</div><div class="kpi-value">'+fmtBRL(val)+'</div><div class="kpi-delta"><span class="dn0">'+sub+'</span></div></div>';}
+  // MoM prev values \u2014 MTD usa di\u00e1rio, m\u00eas fechado usa mensal, semana/dia sem MoM
+  var hasMoM=false,pvPA=0,pvDod=0,pvRel=0,pvSad=0,pvAut=0,pvPMc=0,pvPM1=0,pvPix=0,pvCpC=0,pvCpM=0;
+  if(!isD){
+    var _getP=null;
+    if(pc.prevMoMDailyRange&&pc.diasPassados>0){
+      hasMoM=true;
+      _getP=function(f){return sumDailyFromData(RAW.investimentos_daily,pc.prevMoMDailyRange[0],pc.prevMoMDailyRange[1],f);};
+    } else if(pc.prevMoM){
+      hasMoM=true;
+      _getP=function(f){return sumMeses(allM,pc.prevMoM,f);};
+    } else if(pc.prevQoQ){
+      hasMoM=true;
+      _getP=function(f){return sumMeses(allM,pc.prevQoQ,f);};
+    }
+    if(_getP){
+      pvPA=_getP('pre_acordo'); pvDod=_getP('dod'); pvRel=_getP('relampago');
+      pvSad=_getP('sad'); pvAut=_getP('automaticas'); pvPMc=_getP('pm_cofin');
+      pvPM1=_getP('pm_100'); pvPix=_getP('pix'); pvCpC=_getP('cupom_comercial'); pvCpM=_getP('cupom_marketing');
+    }
+  }
+  var pvGPre=pvPA+pvDod+pvRel,pvGCupons=pvCpC+pvCpM,pvGOutras=pvSad+pvAut+pvPMc+pvPM1+pvPix;
+  var pvTotal=pvGPre+pvGOutras+pvGCupons;
+
+  function _momBadge(curr,prev){
+    var lbl=pc.d1Label||'MoM';
+    if(!hasMoM)return'<span class="dn0">\u2014</span>';
+    if(!prev)return'<span class="dn0">\u2014 '+lbl+'</span>';
+    var d=(curr-prev)/prev*100;
+    if(!isFinite(d))return'<span class="dn0">\u2014 '+lbl+'</span>';
+    var cls=d>=0?'tag-pos':'tag-neg',sign=d>=0?'+':'';
+    return'<span class="'+cls+'">'+sign+d.toFixed(1)+'% '+lbl+'</span>';
+  }
+  function _kpi(lbl,val,prev,sub){
+    return'<div class="kpi-card">'
+      +'<div class="kpi-label">'+lbl+'</div>'
+      +'<div class="kpi-value">'+fmtBRL(val)+'</div>'
+      +'<div class="kpi-delta">'+_momBadge(val,prev)+'</div>'
+      +'<div class="kpi-delta"><span class="dn0">'+sub+'</span></div>'
+      +'</div>';
+  }
   document.getElementById('kpi-inv').innerHTML=
-    _kpi('Total Investido',invTotal,'\u2014')+
-    _kpi('Pr\u00e9-Acordo',gPre,'Pr\u00e9 Ac. + DoD + Rel\u00e2mpago')+
-    _kpi('SAD',vSad,'Smart / Aut. Digital')+
-    _kpi('Autom\u00e1ticas',vAut,'Campanha Autom\u00e1tica')+
-    _kpi('PM Cofin.',vPMc,'Price Matching Cofin.')+
-    _kpi('PM 100%',vPM1,'Price Matching 100% Meli')+
-    _kpi('PIX',vPix,'Desconto PIX')+
-    _kpi('Cupom Comercial',vCpC,'Cupons n\u00e3o-Marketing')+
-    _kpi('Cupom Marketing',vCpM,'Cupons Marketing');
+    _kpi('Total Investido',invTotal,pvTotal,'\u2014')+
+    _kpi('Pr\u00e9-Acordo',gPre,pvGPre,'Pr\u00e9 Ac. + DoD + Rel\u00e2mpago')+
+    _kpi('SAD',vSad,pvSad,'Smart / Aut. Digital')+
+    _kpi('Autom\u00e1ticas',vAut,pvAut,'Campanha Autom\u00e1tica')+
+    _kpi('PM Cofin.',vPMc,pvPMc,'Price Matching Cofin.')+
+    _kpi('PM 100%',vPM1,pvPM1,'Price Matching 100% Meli')+
+    _kpi('PIX',vPix,pvPix,'Desconto PIX')+
+    _kpi('Cupom Comercial',vCpC,pvCpC,'Cupons n\u00e3o-Marketing')+
+    _kpi('Cupom Marketing',vCpM,pvCpM,'Cupons Marketing');
   var cM=pc.chartMonths||pc.curr;
   if(pc.chartGran==='daily'){
     var s=pc.chartStart,e=pc.chartEnd;
@@ -3230,14 +3473,41 @@ function renderCatalogo(){
   setBadge('period-badge-catalogo',pc);
   var ids=sellerIds(state.seller);
 
-  // Build titulo lookup from monthly data
+  // IDs das 3 lojas da Outlet das Fábricas — catálogo fixado em F&H
+  var OUTLET_CAT_IDS=['70123968','2355501248','638325656'];
+
+  // Para Outlet: F&H forçado; para os demais: respeita state.catFilter
+  function catFilterCatalogo(r){
+    if(OUTLET_CAT_IDS.includes(String(r.cust_id)))
+      return (r.vertical||'')==='FURNISHING & HOUSEWARE';
+    if(state.catFilter) return (r.vertical||'')===state.catFilter;
+    return true;
+  }
+
+  // Esconde o filtro de categoria SOMENTE na aba catálogo para Outlet
+  // (mantém visível nas outras abas, ex: visitas)
+  var isOutlet=isOutletView();
+  var catTabBar=document.querySelector('#tab-catalogo .cat-filter-bar');
+  if(catTabBar) catTabBar.style.display=isOutlet?'none':'';
+
+  // Titulo lookup
   var titleMap={};
   (RAW.catalogo_monthly||[]).forEach(function(r){
     var k=String(r.cust_id)+'|'+String(r.item_id);
     if(!titleMap[k])titleMap[k]=r.titulo||'';
   });
 
-  // Aggregate item data from a row array filtered by a date/month predicate
+  // Campaign / optin lookup: {item_id -> {in_campaign, optin}}
+  var campMap={};
+  (RAW.catalogo_campaigns||[]).filter(function(r){return ids.includes(String(r.cust_id));})
+    .forEach(function(r){
+      var iid=String(r.item_id);
+      if(!campMap[iid])campMap[iid]={in_campaign:0,optin:0};
+      if(r.in_campaign)campMap[iid].in_campaign=1;
+      if(r.optin)campMap[iid].optin=1;
+    });
+
+  // Aggregate items from rows filtered by predicate
   function aggItems(rows,filterFn){
     var out={};
     (rows||[]).filter(function(r){return ids.includes(String(r.cust_id));})
@@ -3253,34 +3523,52 @@ function renderCatalogo(){
     return out;
   }
 
-  // Apply catRows filter
-  var catM=catRows(RAW.catalogo_monthly||[]);
-  var catD=catRows(RAW.catalogo_daily||[]);
-
-  var currMap,prevMap;
-  if(pc.gran==='daily'){
-    // Day / week periods \u2014 use daily data
-    currMap=aggItems(catD,function(r){return r.dia>=pc.curr[0]&&r.dia<=pc.curr[1];});
-    prevMap=pc.prev?aggItems(catD,function(r){return r.dia>=pc.prev[0]&&r.dia<=pc.prev[1];}):{};
-  } else {
-    // Month / quarter / year / MTD \u2014 use monthly for current
-    currMap=aggItems(catM,function(r){return (pc.curr||[]).includes(r.mes);});
-    if(pc.prevMoMDailyRange&&pc.diasPassados>0){
-      // MTD: compare current month (naturally D-1 from BQ) vs same days in prev month (daily)
-      prevMap=aggItems(catD,function(r){return r.dia>=pc.prevMoMDailyRange[0]&&r.dia<=pc.prevMoMDailyRange[1];});
-    } else if(pc.prevMoM){
-      prevMap=aggItems(catM,function(r){return (pc.prevMoM||[]).includes(r.mes);});
-    } else if(pc.prevQoQ){
-      prevMap=aggItems(catM,function(r){return (pc.prevQoQ||[]).includes(r.mes);});
-    } else if(pc.prevYoY){
-      prevMap=aggItems(catM,function(r){return (pc.prevYoY||[]).includes(r.mes);});
-    } else {prevMap={};}
+  // Build {cust_id -> total_gmv} for a period, de-duplicating per (seller, period-unit)
+  function buildSellerGmvMap(rows,periodKey,filterFn){
+    var seen={},out={};
+    (rows||[]).filter(function(r){return ids.includes(String(r.cust_id));})
+              .filter(filterFn)
+              .forEach(function(r){
+                var sk=String(r.cust_id)+'|'+r[periodKey];
+                if(!seen[sk]){
+                  seen[sk]=true;
+                  var cid=String(r.cust_id);
+                  out[cid]=(out[cid]||0)+(Number(r.seller_total_gmv)||0);
+                }
+              });
+    return out;
   }
 
-  // Sort current items by GMV desc, take top 40 across all selected sellers
-  var currItems=Object.values(currMap).sort(function(a,b){return b.gmv-a.gmv;}).slice(0,40);
-  var tCurr=currItems.reduce(function(a,r){return a+r.gmv;},0);
-  var tPrev=Object.values(prevMap).reduce(function(a,r){return a+r.gmv;},0);
+  // Filtragem: Outlet = F&H forçado; outros = catFilter normal
+  var catM=(RAW.catalogo_monthly||[]).filter(catFilterCatalogo);
+  var catD=(RAW.catalogo_daily  ||[]).filter(catFilterCatalogo);
+
+  var currMap,prevMap,sellerGmvCurr,sellerGmvPrev;
+  if(pc.gran==='daily'){
+    currMap=aggItems(catD,function(r){return r.dia>=pc.curr[0]&&r.dia<=pc.curr[1];});
+    prevMap=pc.prev?aggItems(catD,function(r){return r.dia>=pc.prev[0]&&r.dia<=pc.prev[1];}): {};
+    sellerGmvCurr=buildSellerGmvMap(catD,'dia',function(r){return r.dia>=pc.curr[0]&&r.dia<=pc.curr[1];});
+    sellerGmvPrev=pc.prev?buildSellerGmvMap(catD,'dia',function(r){return r.dia>=pc.prev[0]&&r.dia<=pc.prev[1];}): {};
+  } else {
+    currMap=aggItems(catM,function(r){return (pc.curr||[]).includes(r.mes);});
+    sellerGmvCurr=buildSellerGmvMap(catM,'mes',function(r){return (pc.curr||[]).includes(r.mes);});
+    if(pc.prevMoMDailyRange&&pc.diasPassados>0){
+      prevMap=aggItems(catD,function(r){return r.dia>=pc.prevMoMDailyRange[0]&&r.dia<=pc.prevMoMDailyRange[1];});
+      sellerGmvPrev=buildSellerGmvMap(catD,'dia',function(r){return r.dia>=pc.prevMoMDailyRange[0]&&r.dia<=pc.prevMoMDailyRange[1];});
+    } else if(pc.prevMoM){
+      prevMap=aggItems(catM,function(r){return (pc.prevMoM||[]).includes(r.mes);});
+      sellerGmvPrev=buildSellerGmvMap(catM,'mes',function(r){return (pc.prevMoM||[]).includes(r.mes);});
+    } else if(pc.prevQoQ){
+      prevMap=aggItems(catM,function(r){return (pc.prevQoQ||[]).includes(r.mes);});
+      sellerGmvPrev=buildSellerGmvMap(catM,'mes',function(r){return (pc.prevQoQ||[]).includes(r.mes);});
+    } else if(pc.prevYoY){
+      prevMap=aggItems(catM,function(r){return (pc.prevYoY||[]).includes(r.mes);});
+      sellerGmvPrev=buildSellerGmvMap(catM,'mes',function(r){return (pc.prevYoY||[]).includes(r.mes);});
+    } else {prevMap={};sellerGmvPrev={};}
+  }
+
+  // Top 50 itens por GMV (exibi\u00e7\u00e3o na tabela)
+  var currItems=Object.values(currMap).sort(function(a,b){return b.gmv-a.gmv;}).slice(0,50);
 
   function deltaBadge(val,isPP){
     if(val===null||val===undefined||isNaN(val))return '<span style="color:var(--muted)">\u2014</span>';
@@ -3289,11 +3577,75 @@ function renderCatalogo(){
     return '<span class="'+cls+'">'+sign+val.toFixed(1)+(isPP?' pp':'%')+'</span>';
   }
 
+  // \u2500\u2500 Summary cards \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  // Totais consolidados dos top-50
+  var totCurrGmv=0,totPrevGmv=0,totCurrSi=0,totPrevSi=0;
+  currItems.forEach(function(r){
+    var p=prevMap[String(r.cust_id)+'|'+String(r.item_id)];
+    totCurrGmv+=r.gmv; totCurrSi+=r.si;
+    if(p){totPrevGmv+=p.gmv; totPrevSi+=p.si;}
+  });
+  var totCurrAsp=totCurrSi?totCurrGmv/totCurrSi:0;
+  var totPrevAsp=totPrevSi?totPrevGmv/totPrevSi:0;
+  // Share consolidado: GMV top-50 / GMV total sellers
+  var totalSellerGmvCurr=ids.reduce(function(a,cid){return a+(sellerGmvCurr[cid]||0);},0);
+  var totalSellerGmvPrev=ids.reduce(function(a,cid){return a+(sellerGmvPrev[cid]||0);},0);
+  var totCurrShare=totalSellerGmvCurr?totCurrGmv/totalSellerGmvCurr*100:0;
+  var totPrevShare=totalSellerGmvPrev?totPrevGmv/totalSellerGmvPrev*100:0;
+  var dGmvTot =totPrevGmv ?(totCurrGmv -totPrevGmv )/totPrevGmv *100:null;
+  var dSiTot  =totPrevSi  ?(totCurrSi  -totPrevSi  )/totPrevSi  *100:null;
+  var dAspTot =totPrevAsp ?(totCurrAsp -totPrevAsp )/totPrevAsp *100:null;
+  var dShareTot=(totPrevShare>0)?(totCurrShare-totPrevShare):null;
+  // Campanha / optin \u2014 itens \u00fanicos do top-50 que est\u00e3o em campanha / com optin
+  var currItemIds=new Set(currItems.map(function(r){return String(r.item_id);}));
+  var inCampCount=0,optinCount=0;
+  Object.keys(campMap).forEach(function(iid){
+    if(currItemIds.has(iid)){
+      if(campMap[iid].in_campaign)inCampCount++;
+      if(campMap[iid].optin)optinCount++;
+    }
+  });
+
+  function kpiCard(label,curr,prev,delta,isPP,isBRL){
+    var fmt=isBRL?fmtBRL:function(v){return v.toFixed(1)+'%';};
+    var currFmt=isBRL?fmtBRL(curr):(curr.toFixed(1)+'%');
+    var prevFmt=isBRL?fmtBRL(prev):(prev.toFixed(1)+'%');
+    var badge=deltaBadge(delta,isPP);
+    return '<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 14px;min-width:130px;flex:1">'
+      +'<div style="font-size:11px;color:var(--muted);font-weight:600;margin-bottom:4px">'+label+'</div>'
+      +'<div style="font-size:16px;font-weight:700;color:var(--text)">'+currFmt+'</div>'
+      +'<div style="font-size:11px;color:var(--muted);margin-top:2px">ant: '+prevFmt+'</div>'
+      +'<div style="margin-top:4px">'+badge+'</div>'
+      +'</div>';
+  }
+  function countCard(label,value,sub){
+    return '<div style="background:var(--card);border:1px solid var(--ml-blue);border-radius:8px;padding:10px 14px;min-width:130px;flex:1">'
+      +'<div style="font-size:11px;color:var(--ml-blue);font-weight:600;margin-bottom:4px">'+label+'</div>'
+      +'<div style="font-size:22px;font-weight:700;color:var(--ml-blue)">'+value+'</div>'
+      +'<div style="font-size:11px;color:var(--muted);margin-top:2px">'+sub+'</div>'
+      +'</div>';
+  }
+
+  var cardsHtml='<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px">'
+    +kpiCard('\u0394 GMV Top-50',totCurrGmv,totPrevGmv,dGmvTot,false,true)
+    +kpiCard('\u0394 SI Top-50',totCurrSi,totPrevSi,dSiTot,false,false)
+    +kpiCard('\u0394 ASP Top-50',totCurrAsp,totPrevAsp,dAspTot,false,true)
+    +kpiCard('\u0394 Share Top-50',totCurrShare,totPrevShare,dShareTot,true,false)
+    +countCard('\ud83c\udfaf Em campanha',inCampCount,'itens \u00fanicos do top-50')
+    +countCard('\u2705 Com optin',optinCount,'itens \u00fanicos do top-50')
+    +'</div>';
+
+  // \u2500\u2500 Cards acima da tabela \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  document.getElementById('cat-summary-cards').innerHTML=cardsHtml;
+
+  // \u2500\u2500 Tabela \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   var thS='padding:8px 9px;font-size:11px;font-weight:700;background:var(--ml-blue);color:#fff;white-space:nowrap';
   var h='<thead><tr>'
     +'<th style="'+thS+';text-align:left;border-radius:6px 0 0 0">Seller</th>'
     +'<th style="'+thS+'">Item</th>'
     +'<th style="'+thS+';text-align:left;min-width:160px">T\u00edtulo</th>'
+    +'<th style="'+thS+';text-align:center">Camp.</th>'
+    +'<th style="'+thS+';text-align:center">Optin</th>'
     +'<th style="'+thS+';text-align:right">GMV</th>'
     +'<th style="'+thS+';text-align:right">SI</th>'
     +'<th style="'+thS+';text-align:right">ASP</th>'
@@ -3301,24 +3653,30 @@ function renderCatalogo(){
     +'<th style="'+thS+';text-align:center">\u0394 GMV</th>'
     +'<th style="'+thS+';text-align:center">\u0394 SI</th>'
     +'<th style="'+thS+';text-align:center">\u0394 ASP</th>'
-    +'<th style="'+thS+';text-align:center">\u0394 Share</th>'
-    +'<th style="'+thS+';text-align:center;border-radius:0 6px 0 0">Link</th>'
+    +'<th style="'+thS+';text-align:center;border-radius:0 6px 0 0">\u0394 Share</th>'
     +'</tr></thead><tbody>';
 
   currItems.forEach(function(r){
     var p=prevMap[String(r.cust_id)+'|'+String(r.item_id)];
-    var share=tCurr?r.gmv/tCurr*100:0;
-    var pShare=(p&&tPrev)?p.gmv/tPrev*100:null;
+    var selGmvC=sellerGmvCurr[String(r.cust_id)]||0;
+    var selGmvP=sellerGmvPrev[String(r.cust_id)]||0;
+    var share  =selGmvC?r.gmv/selGmvC*100:0;
+    var pShare =(p&&selGmvP)?p.gmv/selGmvP*100:null;
     var dGmv=(p&&p.gmv)?(r.gmv-p.gmv)/p.gmv*100:null;
     var dSi =(p&&p.si )?(r.si -p.si )/p.si *100:null;
     var dAsp=(p&&p.asp)?(r.asp-p.asp)/p.asp*100:null;
     var dShare=(pShare!==null&&pShare!==undefined)?(share-pShare):null;
     var titulo=r.titulo||titleMap[String(r.cust_id)+'|'+String(r.item_id)]||'';
-    var mlLink='https://produto.mercadolivre.com.br/MLB-'+r.item_id;
+    var mlLink='https://produto.mercadolivre.com.br/MLB-'+String(r.item_id);
+    var camp=campMap[String(r.item_id)]||{in_campaign:0,optin:0};
+    var campBadge=camp.in_campaign?'<span class="tag-pos">\u2713</span>':'<span style="color:var(--muted)">\u2014</span>';
+    var optinBadge=camp.optin?'<span class="tag-pos">\u2713</span>':'<span style="color:var(--muted)">\u2014</span>';
     h+='<tr>'
       +'<td>'+sellerLabel(r.cust_id)+'</td>'
-      +'<td>'+r.item_id+'</td>'
+      +'<td><a href="'+mlLink+'" target="_blank" style="color:var(--ml-blue2)">'+r.item_id+'</a></td>'
       +'<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+titulo+'</td>'
+      +'<td style="text-align:center">'+campBadge+'</td>'
+      +'<td style="text-align:center">'+optinBadge+'</td>'
       +'<td style="text-align:right">'+fmtBRL(r.gmv)+'</td>'
       +'<td style="text-align:right">'+fmtNum(r.si)+'</td>'
       +'<td style="text-align:right">'+fmtBRL(r.asp)+'</td>'
@@ -3327,7 +3685,6 @@ function renderCatalogo(){
       +'<td style="text-align:center">'+deltaBadge(dSi ,false)+'</td>'
       +'<td style="text-align:center">'+deltaBadge(dAsp,false)+'</td>'
       +'<td style="text-align:center">'+deltaBadge(dShare,true)+'</td>'
-      +'<td style="text-align:center"><a href="'+mlLink+'" target="_blank" style="color:var(--ml-blue2);text-decoration:none">Ver</a></td>'
       +'</tr>';
   });
   document.getElementById('tbl-catalogo').innerHTML=h+'</tbody>';
@@ -3344,6 +3701,9 @@ function renderScorecard(){
   var el=document.getElementById('scorecard-sellers');
   if(state.seller!=='all'){if(el)el.innerHTML='';return;}
   var now=new Date(),yr=now.getFullYear(),mo=now.getMonth();
+  // Exibe scorecard apenas no mês vigente (MTD ou mês atual selecionado explicitamente)
+  var currPeriod='m'+(mo+1);
+  if(state.period!=='month'&&state.period!=='mtd'&&state.period!==currPeriod){if(el)el.innerHTML='';return;}
   var meses=[fmtMonth(yr,mo)];
   var diasP=now.getDate()-1;
   var pmY=mo===0?yr-1:yr,pmM=mo===0?11:mo-1,pmStr=fmtMonth(pmY,pmM);
@@ -3396,7 +3756,10 @@ function renderScorecard(){
   var GROUP_META={'COLIBRI':'COLIBRI','KAPPESBERG':'KAPPESBERG','LINEA':'LINEA',
     'Outlet das Fab\u00e1bricas':'Outlet das Fabricas',
     'M\u00f3veis Prov\u00edncia':'Moveis Provincia',
-    'Decorise':'Decorise'};
+    'Decorise':'Decorise',
+    'Casa Aberta':'Casa Aberta',
+    'Fidelitá':'Fidelita',
+    'Nesher':'Nesher'};
   function getMetaForPeriod(groupName,meses){
     var mk=GROUP_META[groupName];
     if(!mk||!SMETAS[mk]) return 0;
@@ -3463,14 +3826,20 @@ function renderAtingimento(){
     'COLIBRI':'COLIBRI','KAPPESBERG':'KAPPESBERG','LINEA':'LINEA',
     'Outlet das Fábricas':'Outlet das Fabricas',
     'Móveis Província':'Moveis Provincia',
-    'Decorise':'Decorise'
+    'Decorise':'Decorise',
+    'Casa Aberta':'Casa Aberta',
+    'Fidelitá':'Fidelita',
+    'Nesher':'Nesher'
   };
   // SMETAS key → display name
   var dispName={
     'COLIBRI':'COLIBRI','KAPPESBERG':'KAPPESBERG','LINEA':'LINEA',
     'Outlet das Fabricas':'Outlet das Fábricas',
     'Moveis Provincia':'Móveis Província',
-    'Decorise':'Decorise'
+    'Decorise':'Decorise',
+    'Casa Aberta':'Casa Aberta',
+    'Fidelita':'Fidelitá',
+    'Nesher':'Nesher'
   };
   // collect months that have meta_op in any group
   var mSet={};
@@ -3494,13 +3863,16 @@ function renderAtingimento(){
     if(selectedIds.includes(String(s.cust_id))){var mk=gKeyMap[s.group];if(mk)activeGroups[mk]=true;}
   });
   // Outlet das Fabricas: when any of its stores is selected, always aggregate all 3
+  // Casa Aberta: same logic — selecting one store always shows both
   var effectiveIds=selectedIds.slice();
-  if(activeGroups['Outlet das Fabricas']){
-    sellers.forEach(function(s){
-      if(gKeyMap[s.group]==='Outlet das Fabricas'&&!effectiveIds.includes(String(s.cust_id)))
-        effectiveIds.push(String(s.cust_id));
-    });
-  }
+  ['Outlet das Fabricas','Casa Aberta'].forEach(function(grpKey){
+    if(activeGroups[grpKey]){
+      sellers.forEach(function(s){
+        if(gKeyMap[s.group]===grpKey&&!effectiveIds.includes(String(s.cust_id)))
+          effectiveIds.push(String(s.cust_id));
+      });
+    }
+  });
   // aggregate GMV by (SMETAS key, month) — only for effective sellers
   var gGMV={};
   allM.forEach(function(r){
@@ -3549,8 +3921,8 @@ function renderAtingimento(){
       var diffHtml=diff>0
         ?'<span style="color:var(--green);font-weight:600">+'+fmtBRL(diff)+'</span>'
         :isMtd
-          ?'<span style="color:var(--muted)">Faltam '+fmtBRL(-diff)+'</span>'
-          :'<span style="color:var(--red)">Faltam '+fmtBRL(-diff)+'</span>';
+          ?'<span style="color:var(--muted)">-'+fmtBRL(-diff)+'</span>'
+          :'<span style="color:var(--red)">-'+fmtBRL(-diff)+'</span>';
       var projLine='';
       if(isMtd&&fatorProj){var pj=real*fatorProj,pjPct=+(pj/meta*100).toFixed(1),pjCol=pctColor(pjPct);projLine='<div style="font-size:9px;margin-top:4px;padding-top:3px;border-top:1px dashed var(--border);color:var(--muted)">Proj: <b style="color:'+pjCol+'">'+fmtBRL(pj)+'</b> ('+pjPct+'%)</div>';}
       h+='<td style="text-align:center;padding:6px 8px;border-bottom:1px solid var(--border)">'
@@ -3569,7 +3941,7 @@ function renderAtingimento(){
     groups.forEach(function(gk){var meta=(SMETAS[gk].meta_op||{})[m];if(!meta)return;totReal+=(gGMV[gk+'||'+m]||0);totMeta+=meta;});
     if(!totMeta){h+='<td style="text-align:center;color:var(--muted);padding:8px;border-bottom:1px solid var(--border)">—</td>';return;}
     var pct=+(totReal/totMeta*100).toFixed(1),col=pctColor(pct),isMtd=m===currM,diff=totReal-totMeta;
-    var diffHtml=diff>0?'<span style="color:var(--green);font-weight:600">+'+fmtBRL(diff)+'</span>':isMtd?'<span style="color:var(--muted)">Faltam '+fmtBRL(-diff)+'</span>':'<span style="color:var(--red)">Faltam '+fmtBRL(-diff)+'</span>';
+    var diffHtml=diff>0?'<span style="color:var(--green);font-weight:600">+'+fmtBRL(diff)+'</span>':isMtd?'<span style="color:var(--muted)">-'+fmtBRL(-diff)+'</span>':'<span style="color:var(--red)">-'+fmtBRL(-diff)+'</span>';
     var tProjLine='';
     if(isMtd&&fatorProj){var tpj=totReal*fatorProj,tpjPct=+(tpj/totMeta*100).toFixed(1),tpjCol=pctColor(tpjPct);tProjLine='<div style="font-size:9px;margin-top:4px;padding-top:3px;border-top:1px dashed var(--border);color:var(--muted)">Proj: <b style="color:'+tpjCol+'">'+fmtBRL(tpj)+'</b> ('+tpjPct+'%)</div>';}
     h+='<td style="text-align:center;padding:6px 8px;border-bottom:1px solid var(--border)"><div style="font-size:17px;font-weight:700;color:'+col+'">'+pct+'%</div><div style="font-size:10px;color:var(--muted);margin-top:2px;line-height:1.5">'+fmtBRL(totReal)+' / '+fmtBRL(totMeta)+'<br>'+diffHtml+'</div>'+tProjLine+'</td>';
@@ -3653,12 +4025,20 @@ function renderPandora(){
   var mT=pc.gran==='monthly'?pc.curr:pc.currM;
   var ids=sellerIds(state.seller);
   var items=(RAW.pandora_items||[]).filter(function(r){return ids.includes(String(r.cust_id));});
-  // VC lookup by item_id + preco_final + rebate
+  // Para mai/2026: usar snapshot congelado; para demais períodos: dados ao vivo
+  var isMai26=(mT&&mT.length===1&&mT[0]==='2026-05');
+  var vcSrc=isMai26&&(RAW.pandora_vc_mai26||[]).length?RAW.pandora_vc_mai26:RAW.pandora_vc;
+  var campSrc=isMai26&&(RAW.pandora_camp_mai26||[]).length?RAW.pandora_camp_mai26:RAW.pandora_camp;
+  // VC lookup by item_id
   var vcMap={};
-  (RAW.pandora_vc||[]).forEach(function(v){
-    var k=v.item_id;
-    vcMap[k]=v;
-  });
+  (vcSrc||[]).forEach(function(v){vcMap[v.item_id]=v;});
+  // Elegibilidade = item está em pandora_items (já filtrado por P-MLB17513056 ativo)
+  // Optin = item tem preço ativo em LK_ITE_ITEM_PRICES (pandora_camp.optin)
+  var optinSet={};
+  (campSrc||[]).filter(function(r){return ids.includes(String(r.cust_id));})
+    .forEach(function(r){if(r.optin)optinSet[String(r.item_id)]=1;});
+  // mantém campMap como fallback para compatibilidade
+  var campMap={};
   // Financeiro: soma por seller+item nos meses do periodo
   var fin={};
   (RAW.pandora_financeiro||[])
@@ -3672,6 +4052,7 @@ function renderPandora(){
   var TYPE_LABELS={'PRENEGOTIATED':'Pré Acordo','PRE_ACORDO':'Pré Acordo','DOD':'Oferta do Dia','LIGHTNING':'Relâmpago'};
   var h='<thead><tr>'
     +'<th>Seller</th><th>Tipo</th><th>Item ID</th><th>Nome</th>'
+    +'<th>Elegível</th><th>Optin</th>'
     +'<th>Pr. Negociado</th><th>Rebate</th><th>Pr. Final</th>'
     +'<th>Faturamento</th><th>Invest. Rebate</th>'
     +'<th>DC Atual</th><th>VC Final</th>'
@@ -3689,15 +4070,19 @@ function renderPandora(){
       var vc=vcMap[vcKey]||{};
       var fk=String(r.cust_id)+'_'+r.item_id;
       var fv=fin[fk]||{gmv:0,rebate_invest:0};
-      var mlUrl='https://produto.mercadolivre.com.br/MLB-'+r.item_id;
+      var mlUrl='https://produto.mercadolivre.com.br/MLB-'+String(r.item_id);
       var tipoLbl=TYPE_LABELS[r.tipo]||r.tipo||'-';
       var vcCls=vc.vc_final!=null?(vc.vc_final>=3?'tag-pos':vc.vc_final>=1?'dp':'tag-neg'):'dn0';
       var dcCls=vc.dc_atual!=null?(vc.dc_atual>=5?'tag-pos':vc.dc_atual>=2?'dp':'tag-neg'):'dn0';
+      var eligBadge='<span class="tag-pos">Sim</span>';
+      var optBadge=(r.status_campanha&&r.status_campanha.toLowerCase()==='active')?'<span class="tag-pos">Sim</span>':'<span class="dn0">Não</span>';
       h+='<tr>'
         +'<td>'+sellerLabel(r.cust_id)+'</td>'
         +'<td><span class="badge">'+tipoLbl+'</span></td>'
         +'<td><a href="'+mlUrl+'" target="_blank" style="color:var(--ml-blue2)">'+r.item_id+'</a></td>'
         +'<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(r.titulo||'-')+'</td>'
+        +'<td style="text-align:center">'+eligBadge+'</td>'
+        +'<td style="text-align:center">'+optBadge+'</td>'
         +'<td>'+(pn!=null?fmtBRL(pn):'-')+'</td>'
         +'<td>'+(reb!=null?fmtBRL(reb):'-')+'</td>'
         +'<td>'+(pf!=null?fmtBRL(pf):'-')+'</td>'
@@ -3709,12 +4094,15 @@ function renderPandora(){
     });
   document.getElementById('tbl-pandora-items').innerHTML=h+'</tbody>';
   // KPI cards
-  var totInv=0,totGMV=0,dcSum=0,vcSum=0,dcCnt=0,vcCnt=0;
+  // totInv/totGMV: soma TODO o pandora_financeiro do período (inclui itens históricos
+  // que saíram da campanha) — igual ao comportamento original, independente de pandora_items
+  var totInv=0,totGMV=0;
+  Object.values(fin).forEach(function(fv){totInv+=fv.rebate_invest;totGMV+=fv.gmv;});
+  // DC/VC: ponderado apenas pelos itens ativos (com preço conhecido)
+  var dcSum=0,vcSum=0,dcCnt=0,vcCnt=0;
   items.forEach(function(r){
     var fk=String(r.cust_id)+'_'+r.item_id;
     var fv=fin[fk]||{gmv:0,rebate_invest:0};
-    totInv+=fv.rebate_invest;
-    totGMV+=fv.gmv;
     var vc=vcMap[r.item_id]||{};
     if(vc.dc_atual!=null&&fv.gmv>0){dcSum+=vc.dc_atual*fv.gmv;dcCnt+=fv.gmv;}
     if(vc.vc_final!=null&&fv.gmv>0){vcSum+=vc.vc_final*fv.gmv;vcCnt+=fv.gmv;}
@@ -3728,6 +4116,24 @@ function renderPandora(){
   var vcMCls=vcMedia!=null?(vcMedia>=3?'tag-pos':vcMedia>=1?'dp':'tag-neg'):'dn0';
   var roas=totInv>0?+(totGMV/totInv).toFixed(2):null;
   var roasCls=roas!=null?(roas>=10?'tag-pos':roas>=5?'dp':'tag-neg'):'dn0';
+  // Investimento per\u00edodo anterior \u2014 mesmos dias quando MTD, m\u00eas completo quando fechado
+  var prevInv=0;
+  var invLbl=pc.d1Label||'MoM';
+  if(pc.type==='mtd'&&pc.diasPassados>0&&pc.prevMoMDailyRange){
+    // MTD: usa dados di\u00e1rios (pre_acordo + dod) para consist\u00eancia com aba Investimentos
+    prevInv=sumDailyFromData(RAW.investimentos_daily,pc.prevMoMDailyRange[0],pc.prevMoMDailyRange[1],'pre_acordo')
+           +sumDailyFromData(RAW.investimentos_daily,pc.prevMoMDailyRange[0],pc.prevMoMDailyRange[1],'dod');
+  }else{
+    var mTPrev=pc.prevMoM||pc.prevQoQ||[];
+    (RAW.pandora_financeiro||[])
+      .filter(function(r){return ids.includes(String(r.cust_id))&&mTPrev.includes(r.mes);})
+      .forEach(function(r){prevInv+=(Number(r.rebate_invest)||0);});
+  }
+  function _invDeltaHtml(curr,prev){
+    if(!prev||!curr) return '<span class="dn0">\u2014</span>';
+    var d=(curr-prev)/prev*100,cls=d>=0?'dp':'dn',arr=d>=0?'\u25b2':'\u25bc';
+    return '<span class="'+cls+'">'+invLbl+': '+arr+Math.abs(d).toFixed(1)+'%</span>';
+  }
   var roasCard='<div class="kpi-card"><div class="kpi-label">ROAS Pandora</div>'
     +'<div class="kpi-value '+roasCls+'">'+(roas!=null?roas.toFixed(1)+'x':'-')+'</div>'
     +'<div class="kpi-delta"><span class="dn0">GMV / Invest. Rebate</span></div></div>';
@@ -3746,7 +4152,7 @@ function renderPandora(){
     kpiHtml=
       '<div class="kpi-card"><div class="kpi-label">Invest. Rebate no Per\u00edodo</div>'
       +'<div class="kpi-value" style="font-size:20px">'+fmtBRL(totInv)+'</div>'
-      +'<div class="kpi-delta"><span class="dn0">Budget: '+fmtBRL(budget)+'</span></div></div>'
+      +'<div class="kpi-delta">'+_invDeltaHtml(totInv,prevInv)+'<br><span class="dn0">Budget: '+fmtBRL(budget)+'</span></div></div>'
       +'<div class="kpi-card"><div class="kpi-label">% Budget Utilizado</div>'
       +'<div class="kpi-value '+bCls+'">'+fmtPct(pctBudget)+'</div>'
       +'<div class="kpi-delta"><span class="dn0">'+fmtBRL(budget-totInv)+' restante</span></div></div>'
@@ -3755,7 +4161,7 @@ function renderPandora(){
     kpiHtml=
       '<div class="kpi-card"><div class="kpi-label">Invest. Rebate no Per\u00edodo</div>'
       +'<div class="kpi-value" style="font-size:20px">'+fmtBRL(totInv)+'</div>'
-      +'<div class="kpi-delta"><span class="dn0">\u2014</span></div></div>'
+      +'<div class="kpi-delta">'+_invDeltaHtml(totInv,prevInv)+'</div></div>'
       +gmvCard+roasCard+dcVcCards;
   }
   document.getElementById('kpi-pandora').innerHTML=kpiHtml;
@@ -3992,6 +4398,15 @@ document.getElementById('updated-at').textContent='Atualizado: '+RAW.updated_at;
 buildPeriodButtons();
 buildSidebar();
 renderAll();
+
+// Abre links externos via window.open — contorna sandbox do iframe (Grid/GitHub Pages)
+document.addEventListener('click',function(e){
+  var a=e.target.closest('a[href]');
+  if(!a||!a.href)return;
+  e.preventDefault();
+  e.stopPropagation();
+  window.open(a.href,'_blank');
+},false);
 
 // ── Ordenação de tabelas ──────────────────────────────────────────────────────
 (function(){
