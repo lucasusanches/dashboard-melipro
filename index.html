@@ -261,6 +261,9 @@ body{font-family:'Proxima Nova',Arial,sans-serif;background:var(--bg);color:var(
 
 
 
+
+.log-type-section{margin-bottom:20px}
+.log-type-header{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;padding-bottom:8px;border-bottom:2px solid;margin-bottom:10px}
 .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:18px}
 
 
@@ -532,7 +535,7 @@ td:first-child{text-align:left;font-weight:500}
 
 
 
-        <div class="kpi-grid" id="kpi-log"></div>
+        <div id="kpi-log"></div>
 
 
 
@@ -1731,19 +1734,52 @@ function renderGeral(){
   document.getElementById('tbl-geral-sellers').innerHTML=h+'</tbody>';
 }
 function renderLogistica(){
-  var pc=getPeriodConfig(),allM=aggAllMonths(RAW.logistica_monthly,['gmv_total','gmv_ff','si_ff','gmv_xd','si_xd','gmv_ss','si_ss']);
+  var pc=getPeriodConfig();
+  var allM=aggAllMonths(RAW.logistica_monthly,['gmv_total','si_total','gmv_ff','si_ff','gmv_xd','si_xd','gmv_ss','si_ss']);
   setBadge('period-badge-log',pc);
   var meses=pc.gran==='daily'?(pc.currM||[]):(pc.curr||[]);
-  var gmvT,ffV,xdV,ssV;
-  if(pc.gran==='daily'){var _s=pc.curr[0],_e=pc.curr[1];gmvT=sumDailyFromData(RAW.logistica_daily,_s,_e,'gmv_total')||1;ffV=sumDailyFromData(RAW.logistica_daily,_s,_e,'gmv_ff');xdV=sumDailyFromData(RAW.logistica_daily,_s,_e,'gmv_xd');ssV=sumDailyFromData(RAW.logistica_daily,_s,_e,'gmv_ss');}
-  else{gmvT=sumMeses(allM,meses,'gmv_total')||1;ffV=sumMeses(allM,meses,'gmv_ff');xdV=sumMeses(allM,meses,'gmv_xd');ssV=sumMeses(allM,meses,'gmv_ss');}
-  var ffP=(ffV/gmvT)*100,xdP=(xdV/gmvT)*100,ssP=(ssV/gmvT)*100;
-  var ffK=pc.gran==='daily'?{value:ffV,d1:null,d2:null}:computeKPI(pc,allM,'gmv_ff',RAW.logistica_daily);
+  var LFIELDS=['gmv_total','si_total','gmv_ff','si_ff','gmv_xd','si_xd','gmv_ss','si_ss'];
+  var lCurr={},lPrev={},_dl=RAW.logistica_daily;
+  if(pc.gran==='daily'){
+    var _s=pc.curr[0],_e=pc.curr[1];
+    LFIELDS.forEach(function(f){lCurr[f]=sumDailyFromData(_dl,_s,_e,f)||0;});
+    if(pc.prev){LFIELDS.forEach(function(f){lPrev[f]=sumDailyFromData(_dl,pc.prev[0],pc.prev[1],f)||0;});}
+    else if(pc.momM){LFIELDS.forEach(function(f){lPrev[f]=sumMeses(allM,pc.momM,f)||0;});}
+  } else {
+    LFIELDS.forEach(function(f){lCurr[f]=sumMeses(allM,pc.curr,f)||0;});
+    if(pc.prevMoMDailyRange&&pc.diasPassados>0&&_dl){LFIELDS.forEach(function(f){lPrev[f]=sumDailyFromData(_dl,pc.prevMoMDailyRange[0],pc.prevMoMDailyRange[1],f)||0;});}
+    else if(pc.prevMoM){LFIELDS.forEach(function(f){lPrev[f]=sumMeses(allM,pc.prevMoM,f)||0;});}
+    else if(pc.prevQoQ){LFIELDS.forEach(function(f){lPrev[f]=sumMeses(allM,pc.prevQoQ,f)||0;});}
+  }
+  var _lbl=pc.d1Label||'MoM';
+  function _pD(v){if(v==null)return '<span class="dn0">—</span>';var c=v>=0?'dp':'dn',a=v>=0?'▲':'▼';return '<span class="'+c+'">'+_lbl+' '+a+Math.abs(v).toFixed(1)+'%</span>';}
+  function _ppD(v){if(v==null)return '<span class="dn0">—</span>';var c=v>=0?'dp':'dn',a=v>=0?'▲':'▼';return '<span class="'+c+'">'+_lbl+' '+a+Math.abs(v).toFixed(1)+'pp</span>';}
+  function _typeSection(type,label,color){
+    var cG=lCurr['gmv_'+type]||0,pG=lPrev['gmv_'+type]||0;
+    var cS=lCurr['si_'+type]||0,pS=lPrev['si_'+type]||0;
+    var cT=lCurr.gmv_total||1,pT=lPrev.gmv_total||1;
+    var asp=cS?cG/cS:null,aspP=pS?pG/pS:null;
+    var share=cG/cT*100,shareP=pG/pT*100;
+    var dG=pG?(cG-pG)/pG*100:null;
+    var dS=pS?(cS-pS)/pS*100:null;
+    var dA=aspP&&asp!=null?(asp-aspP)/aspP*100:null;
+    var dSh=pT>0?share-shareP:null;
+    return '<div class="log-type-section">'
+      +'<div class="log-type-header" style="color:'+color+';border-color:'+color+'">'+label+'</div>'
+      +'<div class="kpi-grid">'
+      +'<div class="kpi-card"><div class="kpi-label">GMV</div><div class="kpi-value">'+fmtBRL(cG)+'</div><div class="kpi-delta">'+_pD(dG)+'</div></div>'
+      +'<div class="kpi-card"><div class="kpi-label">SI</div><div class="kpi-value">'+fmtNum(Math.round(cS))+'</div><div class="kpi-delta">'+_pD(dS)+'</div></div>'
+      +'<div class="kpi-card"><div class="kpi-label">ASP</div><div class="kpi-value">'+(asp!=null?fmtBRL(asp):'-')+'</div><div class="kpi-delta">'+_pD(dA)+'</div></div>'
+      +'<div class="kpi-card"><div class="kpi-label">% Share GMV</div><div class="kpi-value">'+fmtPct(share)+'</div><div class="kpi-delta">'+_ppD(dSh)+'</div></div>'
+      +'</div></div>';
+  }
   document.getElementById('kpi-log').innerHTML=
-    '<div class="kpi-card"><div class="kpi-label">%FF (GMV)</div><div class="kpi-value">'+fmtPct(ffP)+'</div><div class="kpi-delta">'+dHtml(ffK.d1,pc.d1Label||pc.prevLabel||'vs ant.')+'</div></div>'+
-    '<div class="kpi-card"><div class="kpi-label">GMV FF</div><div class="kpi-value">'+fmtBRL(ffK.value)+'</div><div class="kpi-delta"><span class="dn0">—</span></div></div>'+
-    '<div class="kpi-card"><div class="kpi-label">%XD (GMV)</div><div class="kpi-value">'+fmtPct(xdP)+'</div><div class="kpi-delta"><span class="dn0">—</span></div></div>'+
-    '<div class="kpi-card"><div class="kpi-label">%SS (GMV)</div><div class="kpi-value">'+fmtPct(ssP)+'</div><div class="kpi-delta"><span class="dn0">—</span></div></div>';
+    _typeSection('ss','Self Service','#00A650')+
+    _typeSection('xd','Cross Docking','#FFB800')+
+    _typeSection('ff','Fulfillment','#3483FA');
+  var ffP=(lCurr.gmv_ff||0)/(lCurr.gmv_total||1)*100;
+  var xdP=(lCurr.gmv_xd||0)/(lCurr.gmv_total||1)*100;
+  var ssP=(lCurr.gmv_ss||0)/(lCurr.gmv_total||1)*100;
 
   // CHARTS
   var donut_data=[ffP,xdP,ssP];
