@@ -933,16 +933,15 @@ def q_seller_reputation():
 
 
 def q_visitas_monthly():
-    """Visitas por seller por mes -- BT_VISITS_ITEM."""
+    """Visitas por seller por mes -- BT_MKP_SELLERS_VISITS."""
     return run(f"""
         SELECT
             FORMAT_DATE('%Y-%m', TIM_DAY)   AS mes,
-            CUS_CUST_ID_SEL                 AS cust_id,
-            SUM(QTY_PAGEVIEWS)              AS visits,
-            SUM(QTY_PAGEVIEWS_VIP)          AS visits_vip
-        FROM `meli-bi-data.WHOWNER.BT_VISITS_ITEM`
+            CUS_CUST_ID                     AS cust_id,
+            SUM(QTY_VISITS)                 AS visits
+        FROM `meli-bi-data.WHOWNER.BT_MKP_SELLERS_VISITS`
         WHERE SIT_SITE_ID = 'MLB'
-          AND CUS_CUST_ID_SEL IN ({IDS_STR})
+          AND CUS_CUST_ID IN ({IDS_STR})
           AND TIM_DAY >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 YEAR), YEAR)
           AND TIM_DAY < CURRENT_DATE()
         GROUP BY 1, 2
@@ -951,15 +950,15 @@ def q_visitas_monthly():
 
 
 def q_visitas_daily():
-    """Visitas por seller por dia -- ultimos 90 dias."""
+    """Visitas por seller por dia -- BT_MKP_SELLERS_VISITS, ultimos 90 dias."""
     return run(f"""
         SELECT
             CAST(TIM_DAY AS STRING)         AS dia,
-            CUS_CUST_ID_SEL                 AS cust_id,
-            SUM(QTY_PAGEVIEWS)              AS visits
-        FROM `meli-bi-data.WHOWNER.BT_VISITS_ITEM`
+            CUS_CUST_ID                     AS cust_id,
+            SUM(QTY_VISITS)                 AS visits
+        FROM `meli-bi-data.WHOWNER.BT_MKP_SELLERS_VISITS`
         WHERE SIT_SITE_ID = 'MLB'
-          AND CUS_CUST_ID_SEL IN ({IDS_STR})
+          AND CUS_CUST_ID IN ({IDS_STR})
           AND TIM_DAY >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
           AND TIM_DAY < CURRENT_DATE()
         GROUP BY 1, 2
@@ -968,21 +967,22 @@ def q_visitas_daily():
 
 
 def q_visitas_items():
-    """Top 50 itens por visitas por seller -- ultimos 90 dias."""
+    """Visitas mensais por item (top 200 por seller) -- BT_VISITS_ITEM."""
     return run(f"""
         SELECT
+            FORMAT_DATE('%Y-%m', TIM_DAY)   AS mes,
             CUS_CUST_ID_SEL                 AS cust_id,
-            ITE_ITEM_ID                     AS item_id,
-            SUM(QTY_PAGEVIEWS)              AS visits,
-            SUM(QTY_PAGEVIEWS_VIP)          AS visits_vip
+            CAST(ITE_ITEM_ID AS STRING)     AS item_id,
+            SUM(QTY_PAGEVIEWS)              AS visits
         FROM `meli-bi-data.WHOWNER.BT_VISITS_ITEM`
         WHERE SIT_SITE_ID = 'MLB'
           AND CUS_CUST_ID_SEL IN ({IDS_STR})
-          AND TIM_DAY >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
+          AND TIM_DAY >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 YEAR), YEAR)
           AND TIM_DAY < CURRENT_DATE()
-        GROUP BY 1, 2
-        QUALIFY ROW_NUMBER() OVER (PARTITION BY CUS_CUST_ID_SEL ORDER BY SUM(QTY_VISITS) DESC) <= 50
-        ORDER BY 1, 3 DESC
+        GROUP BY 1, 2, 3
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY CUS_CUST_ID_SEL, FORMAT_DATE('%Y-%m', TIM_DAY)
+                                   ORDER BY SUM(QTY_PAGEVIEWS) DESC) <= 200
+        ORDER BY 1, 2, 4 DESC
     """)
 
 
@@ -3998,7 +3998,7 @@ function renderVisitas(){
   var pc=getPeriodConfig();
   setBadge('period-badge-visitas',pc);
   var meses=pc.gran==='daily'?(pc.currM||[]):(pc.curr||[]);
-  var allVis=aggAllMonths(RAW.visitas_monthly,['visits','visits_vip']);
+  var allVis=aggAllMonths(RAW.visitas_monthly,['visits']);
   var allGmv=aggAllMonths(RAW.geral_monthly,['gmv','si']);
   var ids=sellerIds(state.seller);
   var totVis=sumMeses(allVis,meses,'visits');
@@ -4007,33 +4007,43 @@ function renderVisitas(){
   var visK=computeKPI(pc,allVis,'visits');
   document.getElementById('kpi-visitas').innerHTML=
     kpiCard('Total Visitas',fmtNum(totVis),pc,visK.d1,visK.d2)+
-    '<div class="kpi-card"><div class="kpi-label">Convers\u00e3o</div><div class="kpi-value">'+fmtPct(convPct)+'</div><div class="kpi-delta"><span class="dn0">Pedidos / Visitas</span></div></div>'+
-    '<div class="kpi-card"><div class="kpi-label">Pedidos (SI)</div><div class="kpi-value">'+fmtNum(totSI)+'</div><div class="kpi-delta"><span class="dn0">\u2014</span></div></div>';
+    '<div class="kpi-card"><div class="kpi-label">Conversão</div><div class="kpi-value">'+fmtPct(convPct)+'</div><div class="kpi-delta"><span class="dn0">Pedidos / Visitas</span></div></div>'+
+    '<div class="kpi-card"><div class="kpi-label">Pedidos (SI)</div><div class="kpi-value">'+fmtNum(totSI)+'</div><div class="kpi-delta"><span class="dn0">—</span></div></div>';
   var cM=pc.chartMonths||pc.curr;
   makeChart('ch-vis-mes','bar',cM,[{label:'Visitas',data:cM.map(function(m){return allVis[m]?.visits||0;}),backgroundColor:'#3483FA',borderRadius:4}]);
-  makeChart('ch-conv-mes','line',cM,[{label:'Convers\u00e3o%',data:cM.map(function(m){var v=allVis[m]?.visits||0,s=allGmv[m]?.si||0;return v?+(s/v*100).toFixed(2):null;}),borderColor:'#00A650',backgroundColor:'#00A65022',fill:true,tension:.3,pointRadius:3}],{yFmt:function(v){return v?.toFixed(1)+'%';}});
-  var bySV=aggBySeller(RAW.visitas_monthly,meses,['visits','visits_vip']);
+  makeChart('ch-conv-mes','line',cM,[{label:'Conversão%',data:cM.map(function(m){var v=allVis[m]?.visits||0,s=allGmv[m]?.si||0;return v?+(s/v*100).toFixed(2):null;}),borderColor:'#00A650',backgroundColor:'#00A65022',fill:true,tension:.3,pointRadius:3}],{yFmt:function(v){return v?.toFixed(1)+'%';}});
+  var bySV=aggBySeller(RAW.visitas_monthly,meses,['visits']);
   var bySG=aggBySeller(RAW.geral_monthly,meses,['si']);
-  var h='<thead><tr><th>Seller</th><th>Visitas</th><th>Visitas VIP</th><th>Pedidos (SI)</th><th>Convers\u00e3o</th></tr></thead><tbody>';
+  var h='<thead><tr><th>Seller</th><th>Visitas</th><th>Pedidos (SI)</th><th>Conversão</th></tr></thead><tbody>';
   Object.entries(bySV).sort(function(a,b){return b[1].visits-a[1].visits;}).forEach(function([cid,v]){
     var si=bySG[cid]?.si||0,cv=v.visits?+(si/v.visits*100).toFixed(1):0;
-    h+='<tr><td>'+sellerLabel(cid)+'</td><td>'+fmtNum(v.visits)+'</td><td>'+fmtNum(v.visits_vip)+'</td><td>'+fmtNum(si)+'</td><td>'+fmtPct(cv)+'</td></tr>';
+    h+='<tr><td>'+sellerLabel(cid)+'</td><td>'+fmtNum(v.visits)+'</td><td>'+fmtNum(si)+'</td><td>'+fmtPct(cv)+'</td></tr>';
   });
   document.getElementById('tbl-visitas-sellers').innerHTML=h+'</tbody>';
-  var itemMap={};
-  (RAW.visitas_items||[]).filter(function(r){return ids.includes(String(r.cust_id));}).forEach(function(r){itemMap[r.item_id]={cust_id:r.cust_id,visits:r.visits};});
-  var siMap={};
-  (RAW.catalogo_monthly||[]).filter(function(r){return ids.includes(String(r.cust_id));}).forEach(function(r){
-    if(!siMap[r.item_id])siMap[r.item_id]={titulo:r.titulo||'',si:0};
-    siMap[r.item_id].si+=(Number(r.si)||0);
-    if(!siMap[r.item_id].titulo&&r.titulo)siMap[r.item_id].titulo=r.titulo;
+  var prevMeses=pc.gran==='daily'?(pc.momM||[]):((pc.prevMoM||pc.prevQoQ)||[]);
+  var itemVisCurr={},itemVisPrev={},itemSiCurr={},itemSiPrev={},itemInfo={};
+  (RAW.visitas_items||[]).filter(function(r){return ids.includes(String(r.cust_id));}).forEach(function(r){
+    var k=String(r.item_id);
+    if(meses.includes(r.mes)){itemVisCurr[k]=(itemVisCurr[k]||0)+(Number(r.visits)||0);if(!itemInfo[k])itemInfo[k]={cust_id:r.cust_id};}
+    if(prevMeses.length&&prevMeses.includes(r.mes)){itemVisPrev[k]=(itemVisPrev[k]||0)+(Number(r.visits)||0);}
   });
-  var iRows=Object.entries(itemMap).sort(function(a,b){return b[1].visits-a[1].visits;}).slice(0,50);
-  var h2='<thead><tr><th>Seller</th><th>Item ID</th><th>T\u00edtulo</th><th>Visitas</th><th>Pedidos (SI)</th><th>Convers\u00e3o</th></tr></thead><tbody>';
-  iRows.forEach(function([iid,v]){
-    var info=siMap[iid]||{titulo:'',si:0};
-    var cv=v.visits?+(info.si/v.visits*100).toFixed(1):0;
-    h2+='<tr><td>'+sellerLabel(v.cust_id)+'</td><td>'+iid+'</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+info.titulo+'</td><td>'+fmtNum(v.visits)+'</td><td>'+fmtNum(info.si)+'</td><td>'+fmtPct(cv)+'</td></tr>';
+  (RAW.catalogo_monthly||[]).filter(function(r){return ids.includes(String(r.cust_id));}).forEach(function(r){
+    var k=String(r.item_id);
+    if(!itemInfo[k])itemInfo[k]={cust_id:r.cust_id};
+    if(r.titulo&&!itemInfo[k].titulo)itemInfo[k].titulo=r.titulo;
+    if(meses.includes(r.mes))itemSiCurr[k]=(itemSiCurr[k]||0)+(Number(r.si)||0);
+    if(prevMeses.length&&prevMeses.includes(r.mes))itemSiPrev[k]=(itemSiPrev[k]||0)+(Number(r.si)||0);
+  });
+  var _lbl=pc.d1Label||'MoM';
+  function _dV(c,p){if(p==null||p===0)return '<span class="dn0">—</span>';var d=(c-p)/p*100,cl=d>=0?'dp':'dn',a=d>=0?'▲':'▼';return '<span class="'+cl+'">'+_lbl+' '+a+Math.abs(d).toFixed(1)+'%</span>';}
+  var iRows=Object.keys(itemVisCurr).sort(function(a,b){return (itemVisCurr[b]||0)-(itemVisCurr[a]||0);}).slice(0,50);
+  var h2='<thead><tr><th>Seller</th><th>Item ID</th><th>Título</th><th>Visitas</th><th>Δ Visitas</th><th>Pedidos</th><th>Δ Pedidos</th><th>Conversão</th></tr></thead><tbody>';
+  iRows.forEach(function(iid){
+    var vC=itemVisCurr[iid]||0,vP=itemVisPrev[iid]||null;
+    var sC=itemSiCurr[iid]||0,sP=itemSiPrev[iid]||null;
+    var cv=vC?+(sC/vC*100).toFixed(1):0;
+    var info=itemInfo[iid]||{};
+    h2+='<tr><td>'+sellerLabel(info.cust_id)+'</td><td>'+iid+'</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(info.titulo||'')+'</td><td>'+fmtNum(vC)+'</td><td>'+_dV(vC,vP)+'</td><td>'+fmtNum(sC)+'</td><td>'+_dV(sC,sP)+'</td><td>'+fmtPct(cv)+'</td></tr>';
   });
   document.getElementById('tbl-visitas-items').innerHTML=h2+'</tbody>';
 }
