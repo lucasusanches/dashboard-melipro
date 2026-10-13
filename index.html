@@ -2514,7 +2514,85 @@ function renderOnepage(){
     if(!gl.length)tg+='<tr><td colspan="'+ncol+'" style="text-align:center;color:var(--muted)">Nenhum item com queda de faturamento entre as datas.</td></tr>';
     sec7='<details class="op-sec" open><summary class="section-title">📉 Itens que mais caíram em faturamento — '+dA.l+' vs '+dB.l+' <span style="font-weight:400;color:var(--muted);font-size:11px">(todas as vendas de cada data; clique em "Ver investimento" para o detalhe por frente)</span></summary><div class="table-wrap op-t">'+tg+'</tbody></table></div></details>';
   }
-  root.innerHTML=bar+head+sec1+sec2+sec3+(isAll?'<div class="op-grid"><div>'+sec4+'</div><div>'+sec5+'</div></div>':'')+secDom+sec7+sec6;
+  // ── resumo qualitativo (leitura automática dos dados da tela) ──
+  var secRes=(function(){
+    var pos=[],neg=[];
+    var Rv=function(v){return fmtBRL(Math.abs(v));};
+    var pcg=function(a,b){return b?((a-b)/b*100):null;};
+    var sg=function(v){return (v>=0?'+':'−')+Math.abs(v).toFixed(1)+'%';};
+    var sgR=function(v){return (v>=0?'+':'−')+Rv(v);};
+    var BM=cmp?B:YA,bl=cmp?dB.l:'o mesmo dia do ano anterior';
+    function add(ok,t){(ok?pos:neg).push(t);}
+    var g=pcg(A.gmv,BM.gmv);
+    if(g!==null){
+      var vol=(A.si-BM.si)*(BM.si?BM.gmv/BM.si:0),prc=(A.asp-BM.asp)*A.si,gp=pcg(A.asp,BM.asp),sp=pcg(A.si,BM.si);
+      add(g>=0,'GMV '+sg(g)+' ('+sgR(A.gmv-BM.gmv)+') contra '+bl+': volume de unidades '+(sp!==null?sg(sp):'—')+' ('+sgR(vol)+') e preço médio '+(gp!==null?sg(gp):'—')+' ('+sgR(prc)+').');
+      if(gp!==null&&gp>=3&&sp!==null&&sp<0)add(true,'Ticket médio mais alto (ASP '+sg(gp)+') segurou parte do resultado, mesmo com menos unidades.');
+      if(gp!==null&&gp<=-3)add(false,'ASP caiu '+Math.abs(gp).toFixed(1)+'%: mix mais barato ou redução de preço.');
+    }
+    var vp=pcg(A.vis,BM.vis);
+    if(vp!==null){
+      if(vp<=-10)add(false,'Menos tráfego: visitas '+sg(vp)+' contra '+bl+', o que explica boa parte da variação de GMV.');
+      else if(vp>=10)add(true,'Mais tráfego: visitas '+sg(vp)+' contra '+bl+'.');
+    }
+    var cd=A.conv-BM.conv;
+    if(cd<=-0.05)add(false,'Conversão menor ('+A.conv.toFixed(2)+'% contra '+BM.conv.toFixed(2)+'%).');
+    else if(cd>=0.05)add(true,'Conversão maior ('+A.conv.toFixed(2)+'% contra '+BM.conv.toFixed(2)+'%).');
+    if(cmp){
+      var cc=A.cancPct-B.cancPct;
+      if(cc>=1)add(false,'Cancelamentos subiram '+cc.toFixed(1)+' p.p. ('+A.cancPct.toFixed(1)+'% do GMV).');
+      else if(cc<=-1)add(true,'Cancelamentos caíram '+Math.abs(cc).toFixed(1)+' p.p. ('+A.cancPct.toFixed(1)+'% do GMV).');
+      var ip=pcg(A.inv,B.inv);
+      if(ip!==null&&g!==null){
+        if(ip>0&&g<0)add(false,'Investimento total subiu '+sg(ip)+' enquanto o GMV caiu: pior retorno do investimento ('+f1(A.invPct)+' do GMV contra '+f1(B.invPct)+').');
+        else if(ip<0&&g<0)add(false,'Menos investimento ('+sg(ip)+', '+sgR(A.inv-B.inv)+') acompanha a queda do GMV.');
+        else if(ip>0&&g>0)add(true,'Investimento total '+sg(ip)+' sustentou o crescimento de GMV.');
+        else if(ip<0&&g>0)add(true,'GMV cresceu mesmo com investimento menor ('+sg(ip)+'): eficiência maior.');
+      }
+      var fd=FR.map(function(f){return {n:f[1],d:(A.i[f[0]]||0)-(B.i[f[0]]||0)};}).filter(function(x){return Math.abs(x.d)>0;}).sort(function(x,y){return y.d-x.d;});
+      if(fd.length&&fd[0].d>0)add(true,'Maior aumento de investimento: '+fd[0].n+' ('+sgR(fd[0].d)+').');
+      if(fd.length&&fd[fd.length-1].d<0)add(false,'Maior redução de investimento: '+fd[fd.length-1].n+' ('+sgR(fd[fd.length-1].d)+').');
+      var rp=pcg(A.roasAds,B.roasAds);
+      if(rp!==null&&rp<=-5)add(false,'ROAS de ADS caiu '+Math.abs(rp).toFixed(1)+'% ('+fmtDec(A.roasAds)+'x contra '+fmtDec(B.roasAds)+'x).');
+      else if(rp!==null&&rp>=5)add(true,'ROAS de ADS subiu '+rp.toFixed(1)+'% ('+fmtDec(A.roasAds)+'x contra '+fmtDec(B.roasAds)+'x).');
+    }else{
+      var ap=pcg(A.ads,YA.ads);
+      if(ap!==null&&ap>=10)add(true,'Investimento em ADS '+sg(ap)+' contra o ano anterior.');
+      if(A.cancPct>=8)add(false,'Cancelamentos altos: '+A.cancPct.toFixed(1)+'% do GMV.');
+    }
+    function drv(a,b,sa,sb){var s1=pcg(sa,sb),a1=pcg(sb?a/sa:0,0);return s1;}
+    // lojas
+    if(isAll){
+      var st={};ids.forEach(function(id){st[id]={a:0,b:0,sa:0,sb:0,ya:0};});
+      (OP.geral||[]).forEach(function(r){var o=st[String(r.cust_id)];if(!o)return;var gv=Number(r.gmv)||0,si=Number(r.si)||0;
+        if(r.dia===dA.k){o.a+=gv;o.sa+=si;}
+        if(cmp?r.dia===dB.k:r.dia===dA.ly){o.b+=gv;o.sb+=si;}});
+      var sl=Object.keys(st).map(function(k){return {k:k,o:st[k],d:st[k].a-st[k].b};}).filter(function(x){return x.o.a||x.o.b;});
+      sl.sort(function(x,y){return x.d-y.d;});
+      function why(o){var sp=pcg(o.sa,o.sb),ap=pcg(o.sa?o.a/o.sa:0,o.sb?o.b/o.sb:0);
+        return (sp!==null?'unidades '+sg(sp):'')+(ap!==null?', ASP '+sg(ap):'');}
+      sl.filter(function(x){return x.d<0;}).slice(0,3).forEach(function(x){add(false,sellerLabel(x.k)+': GMV '+sgR(x.d)+' ('+(pcg(x.o.a,x.o.b)!==null?sg(pcg(x.o.a,x.o.b)):'sem base')+'); '+why(x.o)+'.');});
+      sl.slice().reverse().filter(function(x){return x.d>0;}).slice(0,3).forEach(function(x){add(true,sellerLabel(x.k)+': GMV '+sgR(x.d)+' ('+(pcg(x.o.a,x.o.b)!==null?sg(pcg(x.o.a,x.o.b)):'sem base')+'); '+why(x.o)+'.');});
+    }
+    // domínios (comparação entre as duas datas)
+    if(cmp&&dk.length){
+      var dl2=dk.map(function(k){return {k:k,o:dm[k],d:dm[k].a.gmv-dm[k].b.gmv};}).sort(function(x,y){return x.d-y.d;});
+      function dwhy(o){var sp=pcg(o.a.si,o.b.si),ap=pcg(o.a.si?o.a.gmv/o.a.si:0,o.b.si?o.b.gmv/o.b.si:0);return (sp!==null?'unidades '+sg(sp):'')+(ap!==null?', ASP '+sg(ap):'');}
+      dl2.filter(function(x){return x.d<0;}).slice(0,2).forEach(function(x){add(false,'Domínio '+domName(x.k)+': GMV '+sgR(x.d)+(dwhy(x.o)?'; '+dwhy(x.o):'')+'.');});
+      dl2.slice().reverse().filter(function(x){return x.d>0;}).slice(0,2).forEach(function(x){add(true,'Domínio '+domName(x.k)+': GMV '+sgR(x.d)+(dwhy(x.o)?'; '+dwhy(x.o):'')+'.');});
+    }
+    // itens
+    if(cmp&&typeof gl!=='undefined'&&gl&&gl.length){
+      gl.slice(0,3).forEach(function(r){var sp=pcg(r.a?r.a.si:0,r.b?r.b.si:0),ap=pcg(aspOf(r.a),aspOf(r.b));
+        add(false,'Item '+ttl(r.k)+' (MLB-'+r.k+'): GMV '+sgR(r.ga-r.gb)+'; unidades '+(sp!==null?sg(sp):'—')+(ap!==null&&r.a?', ASP '+sg(ap):'')+'.');});
+    }
+    function ul(arr,empty){return arr.length?'<ul style="margin:6px 0 0 18px;padding:0;font-size:13px;line-height:1.5">'+arr.map(function(t){return '<li style="margin-bottom:5px">'+String(t).replace(/</g,'&lt;')+'</li>';}).join('')+'</ul>':'<div class="dn0" style="margin-top:6px">'+empty+'</div>';}
+    return '<details class="op-sec" open><summary class="section-title">📝 Resumo qualitativo '+(cmp?'— '+dA.l+' vs '+dB.l:'— '+dA.l+' vs ano anterior')+' <span style="font-weight:400;color:var(--muted);font-size:11px">(leitura automática dos números da tela)</span></summary>'
+      +'<div class="op-grid"><div class="kpi-card" style="border-left:4px solid #00a650"><div class="kpi-label" style="color:#008a45">✅ Pontos positivos</div>'+ul(pos,'Nenhum destaque positivo nos dados.')+'</div>'
+      +'<div class="kpi-card" style="border-left:4px solid #d93025"><div class="kpi-label" style="color:#d93025">⚠️ Pontos de atenção</div>'+ul(neg,'Nenhum ponto de atenção nos dados.')+'</div></div>'
+      +'<div style="font-size:11px;color:var(--muted);margin:6px 0 18px">Aponta o que os números mostram (volume, preço, tráfego, investimento, cancelamentos). Causas externas, como ruptura de estoque, prazo de entrega e campanhas do marketplace, não aparecem nesta base e precisam de confirmação com o seller.</div></details>';
+  })();
+  root.innerHTML=bar+head+sec1+sec2+sec3+(isAll?'<div class="op-grid"><div>'+sec4+'</div><div>'+sec5+'</div></div>':'')+secDom+sec7+sec6+secRes;
 }
 function renderInvestimentos(){
   var pc=getPeriodConfig();
